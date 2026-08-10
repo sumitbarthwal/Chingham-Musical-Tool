@@ -1,0 +1,37 @@
+{
+  "id": "./",
+  "name": "Chingham's Musical Tool",
+  "short_name": "Chingham",
+  "description": "Tuner, chords, scales, metronome and more for guitar, ukulele, sitar and many other instruments.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0a0a12",
+  "theme_color": "#0a0a12",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["music", "education", "utilities"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

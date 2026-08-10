@@ -6,8 +6,14 @@
   <meta name="theme-color" content="#0a0a12">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Chingham's Musical Tool (Improved)</title>
-  <link rel="manifest" href="data:application/manifest+json,{%22name%22:%22Chingham's%20Musical%20Tool%22,%22short_name%22:%22Chingham%22,%22start_url%22:%22.%22,%22display%22:%22standalone%22,%22background_color%22:%22%230a0a12%22,%22theme_color%22:%22%230a0a12%22}">
+  <title>Chingham's Musical Tool</title>
+  <meta name="description" content="Tuner, chords, scales, metronome and more — installable musical companion for guitar, sitar and many instruments.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Chingham">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
@@ -56,11 +62,17 @@
       --ambient-op: 0;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-    html, body { height: 100%; overflow: hidden; }
+    html, body { height: 100%; height: 100dvh; overflow: hidden; }
     body {
       font-family: var(--font); background: var(--bg-a); color: var(--text);
       display: flex; flex-direction: column; transition: background .3s, color .3s;
       position: relative;
+      min-height: 100dvh;
+      padding-top: env(safe-area-inset-top, 0px);
+    }
+    /* When installed as an app — full-screen app shell, no browser chrome */
+    @media all and (display-mode: standalone), all and (display-mode: fullscreen) {
+      body { background: var(--bg-a); }
     }
     body::before {
       content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
@@ -266,6 +278,11 @@
     <button class="icon-btn" id="settingsBtn" title="Settings">⚙️</button>
   </div>
   <div class="main" id="main"></div>
+  <div id="installBar" class="hidden" style="position:fixed;bottom:calc(var(--nav-h) + 20px + var(--safe-bottom));left:12px;right:12px;z-index:110;max-width:620px;margin:0 auto;left:50%;transform:translateX(-50%);width:calc(100% - 24px);">
+    <button id="installAppBtn" class="btn primary" style="width:100%;box-shadow:var(--shadow-1);display:flex;align-items:center;justify-content:center;gap:8px;min-height:48px;font-size:.95rem;">
+      📲 Install App
+    </button>
+  </div>
   <nav class="bottom-nav">
     <button class="nav-item active" data-panel="tuner"><span class="icon">🎯</span>Tuner</button>
     <button class="nav-item" data-panel="chords"><span class="icon">🎼</span>Chords</button>
@@ -673,7 +690,7 @@
       savedTunings: JSON.parse(localStorage.getItem('cmt-tunings') || '{}'),
       capo: 0, a4: 440, tunerSkin: 'needle',
       isListening: false, smoothedFreq: 0, targetNeedle: 0, needleAngle: 0,
-      closestString: -1, centsHistory: [], inTuneStart: null, inTuneHold: 0,
+      closestString: -1, manualString: -1, centsHistory: [], inTuneStart: null, inTuneHold: 0,
       chordInst: 'guitar', selectedChord: null, leftHanded: false, chordVoicingIndex: 0,
       chordFilter: '', qualityFilter: '', capoTranspose: false,
       favourites: JSON.parse(localStorage.getItem('cmt-favs') || '[]'),
@@ -771,27 +788,60 @@
       return newRoot + rest;
     };
 
-    const yin = (buffer,sr,threshold=0.12) => {
-      const n=buffer.length, half=Math.floor(n/2);
-      const diff=new Float32Array(half);
-      for(let t=0;t<half;t++){ let s=0; for(let j=0;j<half;j++) s+=(buffer[j]-buffer[j+t])**2; diff[t]=s; }
-      let runningSum=0; diff[0]=1;
-      for(let t=1;t<half;t++){ runningSum+=diff[t]; diff[t]*=t/runningSum; }
-      for(let t=2;t<half-1;t++){
-        if(diff[t]<threshold && diff[t]<diff[t-1] && diff[t]<diff[t+1]){
-          const better=t+(diff[t-1]-diff[t+1])/(2*(diff[t-1]-2*diff[t]+diff[t+1]));
-          return sr/better;
+    // Faster YIN with RMS gate + limited lag search for musical range
+    const yin = (buffer, sr, threshold = 0.15) => {
+      const n = buffer.length;
+      // RMS gate — ignore silence / noise
+      let rms = 0;
+      for (let i = 0; i < n; i++) rms += buffer[i] * buffer[i];
+      rms = Math.sqrt(rms / n);
+      if (rms < 0.01) return null;
+      // Search only lags that correspond to ~50–1200 Hz (typical instrument range)
+      const minLag = Math.max(2, Math.floor(sr / 1200));
+      const maxLag = Math.min(Math.floor(n / 2), Math.floor(sr / 50));
+      const half = maxLag;
+      const diff = new Float32Array(half + 1);
+      for (let t = minLag; t <= half; t++) {
+        let s = 0;
+        const limit = n - t;
+        for (let j = 0; j < limit; j++) {
+          const d = buffer[j] - buffer[j + t];
+          s += d * d;
+        }
+        diff[t] = s;
+      }
+      // Cumulative mean normalized difference
+      let runningSum = 0;
+      diff[0] = 1;
+      for (let t = 1; t <= half; t++) {
+        runningSum += diff[t];
+        diff[t] = runningSum > 0 ? (diff[t] * t) / runningSum : 1;
+      }
+      for (let t = minLag + 1; t < half; t++) {
+        if (diff[t] < threshold && diff[t] < diff[t - 1] && diff[t] < diff[t + 1]) {
+          const denom = 2 * (diff[t - 1] - 2 * diff[t] + diff[t + 1]);
+          const better = denom !== 0 ? t + (diff[t - 1] - diff[t + 1]) / denom : t;
+          return sr / better;
         }
       }
       return null;
     };
     const findClosestNote = (freq) => {
-      let best=null,minDiff=Infinity;
-      for(const [n,f] of Object.entries(noteFreqs)){
-        const d=Math.abs(freq-f); if(d<minDiff){minDiff=d;best=n;}
+      if (!freq || freq < 40 || freq > 5000) return null;
+      // Prefer notes near instrument range using log distance
+      let best = null, minCents = Infinity;
+      for (const [n, f] of Object.entries(noteFreqs)) {
+        if (f < 40 || f > 5000) continue;
+        const cents = Math.abs(1200 * Math.log2(freq / f));
+        if (cents < minCents) { minCents = cents; best = n; }
       }
-      if(!best) return null;
-      return {note:best, cents:1200*Math.log2(freq/noteFreqs[best])};
+      if (!best) return null;
+      return { note: best, cents: 1200 * Math.log2(freq / noteFreqs[best]) };
+    };
+    // Cents relative to a specific target frequency (for manual string mode)
+    const centsFromTarget = (freq, targetHz) => {
+      if (!freq || !targetHz) return null;
+      return 1200 * Math.log2(freq / targetHz);
     };
 
     const applyTheme = () => {
@@ -966,6 +1016,9 @@
         <canvas id="tunerCanvas" width="360" height="180"></canvas>
         <canvas class="history-canvas" id="historyCanvas" width="360" height="44"></canvas>
         <div class="string-row" id="stringButtons"></div>
+        <p style="font-size:.72rem;color:var(--text2);text-align:center;margin:-4px 0 10px">
+          Tap a string to play its note · Tap again to lock <strong>Manual Tuning</strong> 🔒
+        </p>
         <div class="row" style="justify-content:center;margin-top:10px;flex-wrap:wrap;gap:8px">
           <button class="btn primary" id="startMic" style="min-width:150px">🎤 Allow Mic & Listen</button>
           <button class="btn hidden" id="stopMic">⏹ Stop</button>
@@ -979,6 +1032,8 @@
       c.querySelectorAll('.inst-btn').forEach(b=>b.onclick=()=>{
         state.tunerInst=b.dataset.inst;
         state.tuningName = state.customTunings[state.tunerInst] ? 'Custom' : 'Standard';
+        state.manualString = -1;
+        state.closestString = -1;
         buildTuner(c);
       });
       $('#capoUp').onclick=()=>{state.capo=Math.min(12,state.capo+1);buildTuner(c);};
@@ -1009,8 +1064,40 @@
       const labels=getCurrentTuning().map(n=>n.replace(/\d/,''));
       const el=$('#stringButtons');
       if(!el) return;
-      el.innerHTML=freqs.map((f,i)=>`<button class="string-btn ${state.closestString===i?'closest':''}" data-idx="${i}">${labels[i]||i+1}<br><small>${f.toFixed(0)} Hz</small></button>`).join('');
-      el.querySelectorAll('.string-btn').forEach(b=>b.onclick=()=>playTone(freqs[+b.dataset.idx],1.4,'triangle',0.28));
+      el.innerHTML=freqs.map((f,i)=>{
+        const isManual = state.manualString === i;
+        const isClosest = !isManual && state.closestString === i;
+        const cls = isManual ? 'closest' : (isClosest ? 'closest' : '');
+        const style = isManual ? 'border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim),0 0 18px var(--accent-dim);' : '';
+        return `<button class="string-btn ${cls}" data-idx="${i}" style="${style}">${labels[i]||i+1}<br><small>${f.toFixed(0)} Hz</small>${isManual?'<br><small>🔒</small>':''}</button>`;
+      }).join('');
+      el.querySelectorAll('.string-btn').forEach(b => {
+        b.onclick = () => {
+          const idx = +b.dataset.idx;
+          const freqs2 = getFreqs();
+          // Play reference tone
+          playTone(freqs2[idx], 1.2, 'triangle', 0.3);
+          // Toggle manual tuning lock on this string
+          if (state.manualString === idx) {
+            state.manualString = -1; // unlock
+            const hint = $('#stringHint');
+            if (hint) hint.textContent = 'Auto mode — play any string';
+          } else {
+            state.manualString = idx;
+            const labels2 = getCurrentTuning().map(n => n.replace(/\d/,''));
+            const hint = $('#stringHint');
+            if (hint) hint.textContent = `🔒 Manual: String ${idx+1} (${labels2[idx]}) — tune to this pitch`;
+            // If not listening, still useful as reference tone only
+            if (!state.isListening) {
+              const h = $('#micHint');
+              if (h) h.textContent = 'Reference tone played. Tap 🎤 Allow Mic & Listen to tune against this string.';
+            }
+          }
+          state.inTuneStart = null;
+          state.inTuneHold = 0;
+          renderStrings();
+        };
+      });
     };
 
     const drawHistory=()=>{
@@ -1168,8 +1255,8 @@
     const stopMic=()=>{
       if(state.micStream) state.micStream.getTracks().forEach(t=>t.stop());
       state.micStream=null; state.analyser=null; state.isListening=false;
-      state.targetNeedle=0; state.closestString=-1; state.centsHistory=[];
-      state.inTuneStart=null; state.inTuneHold=0;
+      state.targetNeedle=0; state.closestString=-1; state.manualString=-1; state.centsHistory=[];
+      state.inTuneStart=null; state.inTuneHold=0; state.smoothedFreq=0;
       $('#startMic')?.classList.remove('hidden');
       $('#stopMic')?.classList.add('hidden');
       const noteEl=$('#detectedNote'), centsEl=$('#centsDisplay'), holdEl=$('#holdTimer');
@@ -1181,49 +1268,85 @@
       renderStrings();
     };
     const tunerLoop=()=>{
-      if(!state.isListening||!state.analyser) return;
-      const buf=new Float32Array(state.analyser.fftSize);
+      if (!state.isListening || !state.analyser || !state.audioCtx) return;
+      const buf = new Float32Array(state.analyser.fftSize);
       state.analyser.getFloatTimeDomainData(buf);
-      const freq=yin(buf,state.audioCtx.sampleRate);
-      if(freq&&freq>50&&freq<2000){
-        state.smoothedFreq=state.smoothedFreq?state.smoothedFreq*0.65+freq*0.35:freq;
-        const res=findClosestNote(state.smoothedFreq);
-        if(res){
-          const noteEl=$('#detectedNote'), centsEl=$('#centsDisplay'), holdEl=$('#holdTimer');
-          if(noteEl) noteEl.textContent=res.note;
-          if(centsEl){
-            const abs=Math.abs(res.cents);
-            centsEl.textContent=(res.cents>0?'+':'')+res.cents.toFixed(1)+' ¢';
-            centsEl.classList.toggle('in-tune',abs<5);
-            if(abs<5){
-              if(!state.inTuneStart) state.inTuneStart=Date.now();
-              state.inTuneHold=Math.floor((Date.now()-state.inTuneStart)/1000);
-              if(holdEl) holdEl.textContent=state.inTuneHold>0?`In tune · ${state.inTuneHold}s`:'In tune';
-              if(state.inTuneHold===1){speak('in tune');vibrate(18);}
-            } else {
-              state.inTuneStart=null; state.inTuneHold=0;
-              if(holdEl) holdEl.textContent='';
+      const freq = yin(buf, state.audioCtx.sampleRate);
+      if (freq && freq > 50 && freq < 2000) {
+        // Slightly faster response when locked to a string
+        const alpha = state.manualString >= 0 ? 0.45 : 0.32;
+        state.smoothedFreq = state.smoothedFreq
+          ? state.smoothedFreq * (1 - alpha) + freq * alpha
+          : freq;
+        const freqs = getFreqs();
+        const labels = getCurrentTuning().map(n => n.replace(/\d/, ''));
+        let cents, displayNote, targetIdx;
+        if (state.manualString >= 0 && freqs[state.manualString]) {
+          // Manual mode: compare only to the locked string
+          targetIdx = state.manualString;
+          cents = centsFromTarget(state.smoothedFreq, freqs[targetIdx]);
+          displayNote = labels[targetIdx] + (getCurrentTuning()[targetIdx].match(/\d/)?.[0] || '');
+        } else {
+          // Auto mode: nearest chromatic note + nearest string
+          const res = findClosestNote(state.smoothedFreq);
+          if (!res) {
+            requestAnimationFrame(tunerLoop);
+            return;
+          }
+          cents = res.cents;
+          displayNote = res.note;
+          let closest = -1, minD = Infinity;
+          freqs.forEach((f, i) => {
+            const d = Math.abs(1200 * Math.log2(state.smoothedFreq / f));
+            if (d < minD && d < 80) { minD = d; closest = i; }
+          });
+          if (closest !== state.closestString) {
+            state.closestString = closest;
+            // Update only classes, avoid full rebuild when possible
+            renderStrings();
+            const hint = $('#stringHint');
+            if (hint && closest >= 0 && state.manualString < 0) {
+              hint.textContent = `Closest: String ${closest + 1} (${labels[closest]}) · Tap a string to lock manual tuning`;
             }
           }
-          state.targetNeedle=Math.max(-0.85,Math.min(0.85,res.cents/55));
-          state.centsHistory.push(res.cents);
-          if(state.centsHistory.length>80) state.centsHistory.shift();
-          const freqs=getFreqs();
-          let closest=-1,minD=Infinity;
-          freqs.forEach((f,i)=>{
-            const d=Math.abs(1200*Math.log2(state.smoothedFreq/f));
-            if(d<minD&&d<100){minD=d;closest=i;}
-          });
-          if(closest!==state.closestString){
-            state.closestString=closest;
-            renderStrings();
-            const hint=$('#stringHint');
-            if(hint&&closest>=0){
-              const labels=getCurrentTuning().map(n=>n.replace(/\d/,''));
-              hint.textContent=`Closest: string ${closest+1} (${labels[closest]})`;
+          targetIdx = closest;
+        }
+        if (cents == null || isNaN(cents)) {
+          requestAnimationFrame(tunerLoop);
+          return;
+        }
+        const noteEl = $('#detectedNote'), centsEl = $('#centsDisplay'), holdEl = $('#holdTimer');
+        if (noteEl) {
+          noteEl.textContent = state.manualString >= 0
+            ? `🔒 ${displayNote}`
+            : displayNote;
+        }
+        if (centsEl) {
+          const abs = Math.abs(cents);
+          centsEl.textContent = (cents > 0 ? '+' : '') + cents.toFixed(1) + ' ¢';
+          centsEl.classList.toggle('in-tune', abs < 5);
+          if (abs < 5) {
+            if (!state.inTuneStart) state.inTuneStart = Date.now();
+            state.inTuneHold = Math.floor((Date.now() - state.inTuneStart) / 1000);
+            if (holdEl) holdEl.textContent = state.inTuneHold > 0
+              ? `✅ In tune · ${state.inTuneHold}s`
+              : '✅ In tune';
+            if (state.inTuneHold === 1) { speak('in tune'); vibrate(20); }
+          } else {
+            state.inTuneStart = null;
+            state.inTuneHold = 0;
+            if (holdEl) {
+              holdEl.textContent = cents < 0 ? '↑ Tune up' : '↓ Tune down';
+              holdEl.style.color = cents < 0 ? 'var(--yellow)' : 'var(--red)';
             }
           }
         }
+        state.targetNeedle = Math.max(-0.85, Math.min(0.85, cents / 50));
+        state.centsHistory.push(cents);
+        if (state.centsHistory.length > 80) state.centsHistory.shift();
+      } else {
+        // No strong pitch — gently return needle toward center
+        state.targetNeedle *= 0.92;
       }
       requestAnimationFrame(tunerLoop);
     };
@@ -1708,8 +1831,19 @@
         <div class="more-section">
           <div class="section-title">${g.label}</div>
           <div class="more-grid">${g.items.map(it=>`<div class="more-item" data-id="${it.id}"><div class="icon">${it.icon}</div><div class="label">${it.label}</div></div>`).join('')}</div>
-        </div>`).join('');
+        </div>`).join('') + `
+        <div class="more-section">
+          <div class="section-title">App</div>
+          <div class="card" style="text-align:center">
+            <p style="font-size:.85rem;color:var(--text2);margin-bottom:12px">Install this tool on your phone or PC for offline use and a full-screen app experience.</p>
+            <button class="btn primary" id="installAppBtnMore" style="width:100%;min-height:48px">📲 Install App</button>
+            <p id="installStatus" style="font-size:.75rem;color:var(--text2);margin-top:10px"></p>
+          </div>
+        </div>`;
       c.querySelectorAll('.more-item').forEach(el=>el.onclick=()=>switchPanel(el.dataset.id));
+      const moreInstall = $('#installAppBtnMore');
+      if (moreInstall) moreInstall.onclick = () => triggerInstall();
+      updateInstallUI();
     };
 
     const buildTabs=(c)=>{
@@ -2078,11 +2212,81 @@
       });
     };
 
+    // —— PWA install prompt ——
+    let deferredInstallPrompt = null;
+    const isStandalone = () =>
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true;
+
+    const updateInstallUI = () => {
+      const bar = $('#installBar');
+      const status = $('#installStatus');
+      if (isStandalone()) {
+        if (bar) bar.classList.add('hidden');
+        if (status) status.textContent = '✅ Running as installed app';
+        return;
+      }
+      if (deferredInstallPrompt) {
+        if (bar) bar.classList.remove('hidden');
+        if (status) status.textContent = 'Ready to install on this device';
+      } else {
+        if (bar) bar.classList.add('hidden');
+        if (status) {
+          status.textContent = 'On iPhone/iPad: Safari → Share → Add to Home Screen. On desktop: use the install icon in the address bar if shown.';
+        }
+      }
+    };
+
+    const triggerInstall = async () => {
+      if (isStandalone()) {
+        alert('App is already installed / running in standalone mode.');
+        return;
+      }
+      if (deferredInstallPrompt) {
+        deferredInstallPrompt.prompt();
+        const choice = await deferredInstallPrompt.userChoice;
+        if (choice.outcome === 'accepted') {
+          deferredInstallPrompt = null;
+          updateInstallUI();
+        }
+      } else {
+        // iOS / browsers without beforeinstallprompt
+        const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+        if (isIOS) {
+          alert('To install on iPhone/iPad:\n\n1. Open this page in Safari\n2. Tap the Share button\n3. Choose “Add to Home Screen”');
+        } else {
+          alert('Install is not available in this browser yet.\n\n• Use Chrome / Edge on Android or desktop\n• Or look for the install icon in the address bar\n• On iOS use Safari → Share → Add to Home Screen');
+        }
+      }
+    };
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+      updateInstallUI();
+    });
+    window.addEventListener('appinstalled', () => {
+      deferredInstallPrompt = null;
+      updateInstallUI();
+    });
+
+    const installBtn = $('#installAppBtn');
+    if (installBtn) installBtn.onclick = () => triggerInstall();
+
     switchPanel('tuner');
-    if('serviceWorker' in navigator){
-      try{navigator.serviceWorker.register('data:application/javascript,'+encodeURIComponent('self.addEventListener("fetch",e=>{})'));}catch(e){}
+    updateInstallUI();
+
+    // Real service worker for offline + installability
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').then((reg) => {
+          console.log('SW registered', reg.scope);
+        }).catch((err) => {
+          console.warn('SW registration failed', err);
+        });
+      });
     }
-    console.log("Chingham's Musical Tool — Fully Upgraded v2 ready");
+    console.log("Chingham's Musical Tool PWA ready");
   })();
   </script>
 </body>
