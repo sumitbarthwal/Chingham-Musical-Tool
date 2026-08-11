@@ -331,6 +331,21 @@
       dotara: { strings:4, labels:['Sa','Pa','Sa','Sa'], standard:['C3','G3','C4','C4'] },
       oud: { strings:6, labels:['C','F','A','D','G','C'], standard:['C2','F2','A2','D3','G3','C4'] },
     };
+    const INST_META = {
+      guitar:{icon:'🎸',label:'Guitar'}, guitalele:{icon:'🪕',label:'Guitalele'}, ukulele:{icon:'🏝️',label:'Ukulele'},
+      bass:{icon:'🔊',label:'Bass'}, doubleBass:{icon:'🎻',label:'Double Bass'}, mandolin:{icon:'🎻',label:'Mandolin'},
+      banjo:{icon:'🪕',label:'Banjo'}, violin:{icon:'🎻',label:'Violin'}, viola:{icon:'🎻',label:'Viola'},
+      cello:{icon:'🎻',label:'Cello'}, tenorGuitar:{icon:'🎸',label:'Tenor Guitar'}, twelveString:{icon:'🎸',label:'12-String'},
+      charango:{icon:'🪕',label:'Charango'}, bouzouki:{icon:'🪕',label:'Bouzouki'}, sitar:{icon:'🪷',label:'Sitar'},
+      sarod:{icon:'🪷',label:'Sarod'}, veena:{icon:'🪷',label:'Veena'}, tanpura:{icon:'🪷',label:'Tanpura'},
+      dotara:{icon:'🪷',label:'Dotara'}, oud:{icon:'🪕',label:'Oud'},
+    };
+    const instSelectHTML = (selected, id='instSelect') =>
+      `<select id="${id}" style="min-width:160px;flex:1">` +
+      Object.keys(INSTRUMENTS).map(k => {
+        const m = INST_META[k] || {icon:'🎵', label:k};
+        return `<option value="${k}" ${k===selected?'selected':''}>${m.icon} ${m.label}</option>`;
+      }).join('') + `</select>`;
     const PRESET_TUNINGS = {
       guitar: { 'Standard':['E2','A2','D3','G3','B3','E4'], 'Drop D':['D2','A2','D3','G3','B3','E4'], 'Open G':['D2','G2','D3','G3','B3','D4'], 'Open D':['D2','A2','D3','F#3','A3','D4'], 'DADGAD':['D2','A2','D3','G3','A3','D4'], 'Open C':['C2','G2','C3','G3','C4','E4'], 'Half Step Down':['D#2','G#2','C#3','F#3','A#3','D#4'], 'Drop C':['C2','G2','C3','F3','A3','D4'] },
       guitalele: { 'Standard':['A2','D3','G3','C4','E4','A4'], 'Drop G':['G2','D3','G3','C4','E4','A4'] },
@@ -697,9 +712,19 @@
       fretInst: 'guitar', scaleType: 'major', scaleKey: 'C', showDegrees: false,
       bpm: 120, timeSig: 4, subdivision: 1, metroActive: false, metroBeat: 0, metroInterval: null,
       earScore: parseInt(localStorage.getItem('cmt-ear') || '0'), currentInterval: null, earMode: 'interval',
+      earHarmonic: false, quizScore: parseInt(localStorage.getItem('cmt-quiz') || '0'),
+      customProgs: JSON.parse(localStorage.getItem('cmt-customProgs') || '[]'),
+      lessonDay: parseInt(localStorage.getItem('cmt-lessonDay') || '0'),
+      trainStats: JSON.parse(localStorage.getItem('cmt-trainStats') || '{"ear":0,"quiz":0,"raga":0,"lessons":0}'),
+      ragaName: 'bhairav',
       practiceLog: JSON.parse(localStorage.getItem('cmt-practice') || '{}'),
+      practiceGoal: parseInt(localStorage.getItem('cmt-goal') || '20'),
+      practiceTimerOn: false, practiceTimerStart: null, practiceTimerAcc: 0,
       setlist: JSON.parse(localStorage.getItem('cmt-setlist') || '[]'),
-      chordProg: [],
+      setlistIndex: 0, liveSetlist: false,
+      chordProg: [], progPlaying: false, progTimer: null, progIndex: 0,
+      droneOn: false, droneNodes: null, droneNote: 'C', droneOct: 3,
+      tunerSensitivity: parseFloat(localStorage.getItem('cmt-sens') || '0.5'),
       audioCtx: null, micStream: null, analyser: null,
       tunerRaf: null, loopChunks: [], loopRecorder: null, isRecordingLoop: false,
     };
@@ -730,6 +755,52 @@
         osc.connect(gain); gain.connect(ctx.destination);
         osc.start(ctx.currentTime+when); osc.stop(ctx.currentTime+when+dur);
       });
+    };
+    const stopDrone = () => {
+      if (state.droneNodes) {
+        try {
+          state.droneNodes.forEach(n => { try { n.stop(); } catch(_){} try { n.disconnect(); } catch(_){} });
+        } catch(_){}
+        state.droneNodes = null;
+      }
+      state.droneOn = false;
+      const b = $('#droneBtn'); if (b) b.textContent = '🕉️ Drone';
+    };
+    const startDrone = async (rootNote) => {
+      stopDrone();
+      const ctx = await getCtx();
+      const note = rootNote || state.droneNote || 'C';
+      const oct = state.droneOct || 3;
+      // Tanpura-style: Sa + Pa + Sa (upper) + slight shimmer
+      const freqs = [
+        noteFreqs[note + oct] || 130.8,
+        noteFreqs[NOTES[(NOTES.indexOf(note)+7)%12] + oct] || 196,
+        noteFreqs[note + (oct+1)] || 261.6,
+      ];
+      const nodes = [];
+      freqs.forEach((f, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = i === 2 ? 'triangle' : 'sine';
+        osc.frequency.value = f;
+        gain.gain.value = i === 0 ? 0.06 : 0.04;
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start();
+        nodes.push(osc, gain);
+      });
+      state.droneNodes = nodes;
+      state.droneOn = true;
+      state.droneNote = note;
+      const b = $('#droneBtn'); if (b) b.textContent = '🛑 Drone';
+    };
+    const toggleDrone = () => {
+      if (state.droneOn) stopDrone();
+      else {
+        // Use scale key or open string root if available
+        const root = (state.scaleKey || 'C').replace(/m$/,'').slice(0,2).replace(/[^A-G#b]/,'') || 'C';
+        const n = NOTES.includes(root) ? root : (NOTES.includes(root[0]) ? root[0] : 'C');
+        startDrone(n);
+      }
     };
     const vibrate = (ms=25) => { if(state.vibrate&&navigator.vibrate) navigator.vibrate(ms); };
     const speak = (txt) => {
@@ -789,13 +860,16 @@
     };
 
     // Faster YIN with RMS gate + limited lag search for musical range
-    const yin = (buffer, sr, threshold = 0.15) => {
+    const yin = (buffer, sr, threshold) => {
+      const sens = Math.max(0.05, Math.min(1, state.tunerSensitivity ?? 0.5));
+      // Higher sensitivity = lower RMS gate + looser YIN threshold
+      const rmsGate = 0.025 - sens * 0.02; // 0.025 (strict) → 0.005 (sensitive)
+      const yinThresh = threshold != null ? threshold : (0.22 - sens * 0.12); // 0.22 → 0.10
       const n = buffer.length;
-      // RMS gate — ignore silence / noise
       let rms = 0;
       for (let i = 0; i < n; i++) rms += buffer[i] * buffer[i];
       rms = Math.sqrt(rms / n);
-      if (rms < 0.01) return null;
+      if (rms < rmsGate) return null;
       // Search only lags that correspond to ~50–1200 Hz (typical instrument range)
       const minLag = Math.max(2, Math.floor(sr / 1200));
       const maxLag = Math.min(Math.floor(n / 2), Math.floor(sr / 50));
@@ -818,7 +892,7 @@
         diff[t] = runningSum > 0 ? (diff[t] * t) / runningSum : 1;
       }
       for (let t = minLag + 1; t < half; t++) {
-        if (diff[t] < threshold && diff[t] < diff[t - 1] && diff[t] < diff[t + 1]) {
+        if (diff[t] < yinThresh && diff[t] < diff[t - 1] && diff[t] < diff[t + 1]) {
           const denom = 2 * (diff[t - 1] - 2 * diff[t] + diff[t + 1]);
           const better = denom !== 0 ? t + (diff[t - 1] - diff[t + 1]) / denom : t;
           return sr / better;
@@ -863,6 +937,7 @@
       if (state.metroActive) {
         state.metroActive = false;
       }
+      if (state.progPlaying) stopProgPlayer();
       state.currentPanel = name;
       $$('.nav-item').forEach(n=>{
         n.classList.toggle('active', n.dataset.panel===name || (!primaryPanels.includes(name)&&n.dataset.panel==='more'));
@@ -980,6 +1055,10 @@
         case 'practice': buildPractice(container); break;
         case 'setlist': buildSetlist(container); break;
         case 'circle': buildCircle(container); break;
+        case 'fretQuiz': buildFretQuiz(container); break;
+        case 'raga': buildRaga(container); break;
+        case 'lesson': buildLesson(container); break;
+        case 'report': buildReport(container); break;
       }
     };
 
@@ -988,11 +1067,10 @@
       const hasCustom = state.customTunings[state.tunerInst] && state.customTunings[state.tunerInst].length;
       const tuningLabel = hasCustom ? (state.tuningName||'Custom') : 'Standard';
       c.innerHTML=`
-        <div class="row">${Object.keys(INSTRUMENTS).map(k=>{
-          const icons = {guitar:'🎸',guitalele:'🪕',ukulele:'🏝️',bass:'🔊',doubleBass:'🎻',mandolin:'🎻',banjo:'🪕',violin:'🎻',viola:'🎻',cello:'🎻',tenorGuitar:'🎸',twelveString:'🎸',charango:'🪕',bouzouki:'🪕',sitar:'🪷',sarod:'🪷',veena:'🪷',tanpura:'🪷',dotara:'🪷',oud:'🪕'};
-          const labels = {guitar:'Guitar',guitalele:'Guitalele',ukulele:'Ukulele',bass:'Bass',doubleBass:'Double Bass',mandolin:'Mandolin',banjo:'Banjo',violin:'Violin',viola:'Viola',cello:'Cello',tenorGuitar:'Tenor Guitar',twelveString:'12-String',charango:'Charango',bouzouki:'Bouzouki',sitar:'Sitar',sarod:'Sarod',veena:'Veena',tanpura:'Tanpura',dotara:'Dotara',oud:'Oud'};
-          return `<button class="btn small inst-btn ${state.tunerInst===k?'active':''}" data-inst="${k}">${icons[k]||''} ${labels[k]||k}</button>`;
-        }).join('')}</div>
+        <div class="row" style="gap:8px;align-items:center">
+          <label style="font-size:.8rem;color:var(--text2);white-space:nowrap">Instrument</label>
+          ${instSelectHTML(state.tunerInst,'tunerInstSelect')}
+        </div>
         <div class="row">
           <button class="btn small" id="capoDown" title="Decrease Capo">−</button>
           <button class="btn small" id="capoBtn" style="min-width:70px">Capo ${state.capo}</button>
@@ -1005,6 +1083,12 @@
             <option value="strobe" ${state.tunerSkin==='strobe'?'selected':''}>Strobe</option>
             <option value="bar" ${state.tunerSkin==='bar'?'selected':''}>Bar</option>
           </select>
+        </div>
+        <div class="row" style="align-items:center;gap:10px;margin-top:4px">
+          <label style="font-size:.78rem;color:var(--text2);white-space:nowrap">Sensitivity</label>
+          <input type="range" id="sensSlider" min="0.1" max="1" step="0.05" value="${state.tunerSensitivity}" style="flex:1">
+          <span id="sensVal" style="font-size:.75rem;min-width:36px;color:var(--text2)">${Math.round(state.tunerSensitivity*100)}%</span>
+          <button class="btn small" id="droneBtn" title="Hold drone">${state.droneOn?'🛑 Drone':'🕉️ Drone'}</button>
         </div>
         <div class="tuning-label">Tuning: ${tuningLabel}${state.capo?` · Capo ${state.capo}`:''}${state.tunerInst==='guitalele'?' · A D G C E A':''}</div>
         <div class="tuner-display">
@@ -1029,13 +1113,14 @@
             : 'Microphone access is required for live tuning. Click the button above — your browser will ask for permission.'}
         </p>
       `;
-      c.querySelectorAll('.inst-btn').forEach(b=>b.onclick=()=>{
-        state.tunerInst=b.dataset.inst;
+      const tunerSel=$('#tunerInstSelect');
+      if(tunerSel) tunerSel.onchange=function(){
+        state.tunerInst=this.value;
         state.tuningName = state.customTunings[state.tunerInst] ? 'Custom' : 'Standard';
         state.manualString = -1;
         state.closestString = -1;
         buildTuner(c);
-      });
+      };
       $('#capoUp').onclick=()=>{state.capo=Math.min(12,state.capo+1);buildTuner(c);};
       $('#capoDown').onclick=()=>{state.capo=Math.max(0,state.capo-1);buildTuner(c);};
       $('#capoReset').onclick=()=>{state.capo=0;buildTuner(c);};
@@ -1043,6 +1128,14 @@
       $('#tuningBtn').onclick=()=>switchPanel('tuning');
       $('#a4Ref').onchange=function(){state.a4=parseFloat(this.value)||440;buildFreqs(state.a4);renderStrings();};
       $('#skinSelect').onchange=function(){state.tunerSkin=this.value;};
+      const sens=$('#sensSlider');
+      if(sens) sens.oninput=function(){
+        state.tunerSensitivity=+this.value;
+        localStorage.setItem('cmt-sens', String(state.tunerSensitivity));
+        const sv=$('#sensVal'); if(sv) sv.textContent=Math.round(state.tunerSensitivity*100)+'%';
+      };
+      const droneBtn=$('#droneBtn');
+      if(droneBtn) droneBtn.onclick=()=>toggleDrone();
       // Bind mic buttons (always re-bind after rebuild)
       const startBtn = $('#startMic');
       const stopBtn = $('#stopMic');
@@ -1450,28 +1543,27 @@
         return af-bf;
       });
       c.innerHTML=`
-        <div class="row">${Object.keys(INSTRUMENTS).map(k=>{
-          const icons = {guitar:'🎸',guitalele:'🪕',ukulele:'🏝️',bass:'🔊',doubleBass:'🎻',mandolin:'🎻',banjo:'🪕',violin:'🎻',viola:'🎻',cello:'🎻',tenorGuitar:'🎸',twelveString:'🎸',charango:'🪕',bouzouki:'🪕',sitar:'🪷',sarod:'🪷',veena:'🪷',tanpura:'🪷',dotara:'🪷',oud:'🪕'};
-          const labels = {guitar:'Guitar',guitalele:'Guitalele',ukulele:'Ukulele',bass:'Bass',doubleBass:'Double Bass',mandolin:'Mandolin',banjo:'Banjo',violin:'Violin',viola:'Viola',cello:'Cello',tenorGuitar:'Tenor Guitar',twelveString:'12-String',charango:'Charango',bouzouki:'Bouzouki',sitar:'Sitar',sarod:'Sarod',veena:'Veena',tanpura:'Tanpura',dotara:'Dotara',oud:'Oud'};
-          return `<button class="btn small inst-btn ${inst===k?'active':''}" data-inst="${k}">${icons[k]||''} ${labels[k]||k}</button>`;
-        }).join('')}</div>
+        <div class="row" style="gap:8px;align-items:center">
+          <label style="font-size:.8rem;color:var(--text2);white-space:nowrap">Instrument</label>
+          ${instSelectHTML(inst,'chordInstSelect')}
+        </div>
         <div class="row">
-          <input type="text" id="chordSearch" placeholder="Search…" value="${state.chordFilter}" style="flex:1;min-width:110px">
+          <input type="text" id="chordSearch" placeholder="Search chords…" value="${state.chordFilter}" style="flex:1;min-width:110px">
+          <select id="qualitySelect" style="min-width:110px">
+            <option value="" ${!state.qualityFilter?'selected':''}>✨ All</option>
+            <option value="maj" ${state.qualityFilter==='maj'?'selected':''}>☀️ Maj</option>
+            <option value="min" ${state.qualityFilter==='min'?'selected':''}>🌙 Min</option>
+            <option value="7" ${state.qualityFilter==='7'?'selected':''}>7️⃣ 7ths</option>
+            <option value="sus" ${state.qualityFilter==='sus'?'selected':''}>〰️ Sus</option>
+            <option value="dim" ${state.qualityFilter==='dim'?'selected':''}>🔻 Dim</option>
+            <option value="5" ${state.qualityFilter==='5'?'selected':''}>⚡ Power</option>
+          </select>
           <label style="font-size:.82rem"><input type="checkbox" id="lefty" ${state.leftHanded?'checked':''}> Left</label>
+        </div>
+        <div class="row">
           <button class="btn primary small" id="playChord">🔊 Strum</button>
           <button class="btn small" id="arpeggio">↗️ Arp</button>
-        </div>
-        <div class="row" style="margin-bottom:8px">
-          <label style="font-size:.82rem"><input type="checkbox" id="capoTrans" ${state.capoTranspose?'checked':''}> 🎚️ Capo Transpose · Show Sounding Name (Capo ${state.capo})</label>
-        </div>
-        <div class="quality-chips">
-          <button class="chip ${!state.qualityFilter?'selected':''}" data-q="">✨ All</button>
-          <button class="chip ${state.qualityFilter==='maj'?'selected':''}" data-q="maj">☀️ Maj</button>
-          <button class="chip ${state.qualityFilter==='min'?'selected':''}" data-q="min">🌙 Min</button>
-          <button class="chip ${state.qualityFilter==='7'?'selected':''}" data-q="7">7️⃣ 7ths</button>
-          <button class="chip ${state.qualityFilter==='sus'?'selected':''}" data-q="sus">〰️ Sus</button>
-          <button class="chip ${state.qualityFilter==='dim'?'selected':''}" data-q="dim">🔻 Dim</button>
-          <button class="chip ${state.qualityFilter==='5'?'selected':''}" data-q="5">⚡ Power</button>
+          <label style="font-size:.82rem"><input type="checkbox" id="capoTrans" ${state.capoTranspose?'checked':''}> Capo Transpose</label>
         </div>
         <div class="chip-grid mb-12" id="chordGrid" style="max-height:150px;overflow-y:auto">
           ${chords.length ? chords.map(ch=>{
@@ -1525,12 +1617,14 @@
         state.selectedChord = null;
       }
       updateFavBtn();
-      c.querySelectorAll('.inst-btn').forEach(b=>b.onclick=()=>{
-        state.chordInst=b.dataset.inst; state.selectedChord=null; state.chordFilter=''; state.qualityFilter='';
+      const chordSel=$('#chordInstSelect');
+      if(chordSel) chordSel.onchange=function(){
+        state.chordInst=this.value; state.selectedChord=null; state.chordFilter=''; state.qualityFilter='';
         buildChords(c);
-      });
+      };
+      const qualSel=$('#qualitySelect');
+      if(qualSel) qualSel.onchange=function(){ state.qualityFilter=this.value; buildChords(c); };
       $('#chordSearch').oninput=function(){state.chordFilter=this.value;buildChords(c);};
-      $$('.quality-chips .chip').forEach(ch=>ch.onclick=()=>{state.qualityFilter=ch.dataset.q; buildChords(c);});
       $('#lefty').onchange=function(){state.leftHanded=this.checked;drawChord();};
       if ($('#capoTrans')) $('#capoTrans').onchange=function(){
         state.capoTranspose=this.checked;
@@ -1636,13 +1730,12 @@
       const inst=state.fretInst;
       const num=INSTRUMENTS[inst]?.strings||6;
       c.innerHTML=`
-        <div class="row">${Object.keys(INSTRUMENTS).map(k=>{
-          const icons = {guitar:'🎸',guitalele:'🪕',ukulele:'🏝️',bass:'🔊',doubleBass:'🎻',mandolin:'🎻',banjo:'🪕',violin:'🎻',viola:'🎻',cello:'🎻',tenorGuitar:'🎸',twelveString:'🎸',charango:'🪕',bouzouki:'🪕',sitar:'🪷',sarod:'🪷',veena:'🪷',tanpura:'🪷',dotara:'🪷',oud:'🪕'};
-          const labels = {guitar:'Guitar',guitalele:'Guitalele',ukulele:'Ukulele',bass:'Bass',doubleBass:'Double Bass',mandolin:'Mandolin',banjo:'Banjo',violin:'Violin',viola:'Viola',cello:'Cello',tenorGuitar:'Tenor Guitar',twelveString:'12-String',charango:'Charango',bouzouki:'Bouzouki',sitar:'Sitar',sarod:'Sarod',veena:'Veena',tanpura:'Tanpura',dotara:'Dotara',oud:'Oud'};
-          return `<button class="btn small inst-btn ${inst===k?'active':''}" data-inst="${k}">${icons[k]||''} ${labels[k]||k}</button>`;
-        }).join('')}</div>
+        <div class="row" style="gap:8px;align-items:center">
+          <label style="font-size:.8rem;color:var(--text2);white-space:nowrap">Instrument</label>
+          ${instSelectHTML(inst,'scaleInstSelect')}
+        </div>
         <div class="row">
-          <select id="scaleType">${Object.keys(SCALE_DB).map(s=>{
+          <select id="scaleType" style="flex:1">${Object.keys(SCALE_DB).map(s=>{
             const nice = s.replace(/([A-Z])/g,' $1').replace(/^./,c=>c.toUpperCase()).trim()
               .replace('Pentatonic Maj','Pentatonic Major').replace('Pentatonic Min','Pentatonic Minor')
               .replace('Harmonic Minor','Harmonic Minor').replace('Melodic Minor','Melodic Minor');
@@ -1657,7 +1750,8 @@
         </div>
         <p style="font-size:.78rem;color:var(--text2);text-align:center">Tap any cell to hear · Root = purple · Scale = orange</p>
       `;
-      c.querySelectorAll('.inst-btn').forEach(b=>b.onclick=()=>{state.fretInst=b.dataset.inst;buildScales(c);});
+      const scaleSel=$('#scaleInstSelect');
+      if(scaleSel) scaleSel.onchange=function(){state.fretInst=this.value;buildScales(c);};
       $('#scaleType').onchange=function(){state.scaleType=this.value;renderFretboard();};
       $('#scaleKey').onchange=function(){state.scaleKey=this.value;renderFretboard();};
       $('#showDeg').onchange=function(){state.showDegrees=this.checked;renderFretboard();};
@@ -1819,8 +1913,10 @@
           {id:'backing',icon:'🎧',label:'Backing Track'},{id:'effects',icon:'🎛️',label:'Effects'},
         ]},
         {label:'Learn', items:[
-          {id:'tabs',icon:'📜',label:'Song Tabs'},{id:'progressions',icon:'🎶',label:'Progressions'},
-          {id:'ear',icon:'👂',label:'Ear Trainer'},{id:'circle',icon:'⭕',label:'Circle of Fifths'},
+          {id:'lesson',icon:'📖',label:'Daily Lesson'},{id:'ear',icon:'👂',label:'Ear Trainer'},
+          {id:'fretQuiz',icon:'🎯',label:'Fretboard Quiz'},{id:'raga',icon:'🪷',label:'Raga Practice'},
+          {id:'progressions',icon:'🎶',label:'Progressions'},{id:'circle',icon:'⭕',label:'Circle of Fifths'},
+          {id:'tabs',icon:'📜',label:'Song Tabs'},{id:'report',icon:'📊',label:'Session Report'},
         ]},
         {label:'Track', items:[
           {id:'practice',icon:'📈',label:'Practice Log'},{id:'setlist',icon:'📋',label:'Setlist'},
@@ -1865,6 +1961,13 @@
       $('#tabStop').onclick=()=>clearInterval(scrollInt);
     };
 
+    const stopProgPlayer = () => {
+      state.progPlaying = false;
+      if (state.progTimer) { clearTimeout(state.progTimer); state.progTimer = null; }
+      state.progIndex = 0;
+      const btn = $('#playProg'); if (btn) btn.textContent = '▶ Play';
+      const cur = $('#progCurrent'); if (cur) cur.textContent = '';
+    };
     const buildProgressions=(c)=>{
       const chords = CHORD_DB.guitar;
       const presets = {
@@ -1874,7 +1977,9 @@
         'I–vi–IV–V': ['C','Am','F','G'],
         'vi–IV–I–V': ['Am','F','C','G'],
         'Andalusian': ['Am','G','F','E'],
-        '50s Progression': ['C','Am','F','G']
+        '50s Progression': ['C','Am','F','G'],
+        'I–IV–V': ['G','C','D'],
+        'Canon': ['C','G','Am','Em','F','C','F','G']
       };
       c.innerHTML=`
         <div class="row"><button class="btn small" onclick="switchPanel('more')">← Back</button></div>
@@ -1885,33 +1990,97 @@
           </div>
         </div>
         <div class="card"><div class="section-title">Progression</div>
-          <div id="progList" style="font-size:1.15rem;font-weight:600;min-height:30px">${state.chordProg.join(' → ')||'Empty'}</div>
+          <div id="progList" style="font-size:1.15rem;font-weight:600;min-height:30px;line-height:1.5">${state.chordProg.join(' → ')||'Empty'}</div>
+          <div id="progCurrent" style="margin-top:10px;font-size:1.6rem;font-weight:800;color:var(--accent);text-align:center;min-height:36px"></div>
         </div>
         <div class="row">
           <select id="progChord">${chords.map(ch=>`<option>${ch.name}</option>`).join('')}</select>
           <button class="btn primary small" id="addProg">➕</button>
           <button class="btn small" id="clearProg">Clear</button>
         </div>
+        <div class="card" style="margin-top:10px">
+          <div class="section-title">Custom Progressions</div>
+          <div class="row">
+            <input type="text" id="progName" placeholder="Name this progression…" style="flex:1">
+            <button class="btn primary small" id="saveProg">💾 Save</button>
+          </div>
+          <div class="chip-grid" id="customProgList" style="margin-top:10px">
+            ${(state.customProgs||[]).length
+              ? state.customProgs.map((p,i)=>`<button class="chip" data-ci="${i}">${p.name} <span class="remove-set" data-del="${i}" style="margin-left:6px">✕</span></button>`).join('')
+              : '<p style="font-size:.8rem;color:var(--text2)">Save your own progressions for practice</p>'}
+          </div>
+        </div>
         <div class="row">
-          <label>BPM <input type="number" id="progBpm" value="90" style="width:64px"></label>
-          <button class="btn primary" id="playProg">▶ Play</button>
+          <label>BPM <input type="number" id="progBpm" value="90" min="40" max="200" style="width:64px"></label>
+          <label style="font-size:.82rem"><input type="checkbox" id="progLoop" checked> Loop</label>
+          <button class="btn primary" id="playProg">${state.progPlaying?'⏹ Stop':'▶ Play'}</button>
         </div>
       `;
       $$('#progPresets .chip').forEach(ch => {
         ch.onclick = () => {
+          stopProgPlayer();
           state.chordProg = presets[ch.dataset.preset].slice();
           $('#progList').textContent = state.chordProg.join(' → ');
         };
       });
       $('#addProg').onclick=()=>{state.chordProg.push($('#progChord').value);$('#progList').textContent=state.chordProg.join(' → ');};
-      $('#clearProg').onclick=()=>{state.chordProg=[];$('#progList').textContent='Empty';};
+      $('#clearProg').onclick=()=>{stopProgPlayer();state.chordProg=[];$('#progList').textContent='Empty';};
+      $('#saveProg').onclick=()=>{
+        const name = ($('#progName').value || '').trim() || ('Custom ' + ((state.customProgs||[]).length + 1));
+        if (!state.chordProg.length) { alert('Add some chords first'); return; }
+        state.customProgs = state.customProgs || [];
+        state.customProgs.push({ name, chords: state.chordProg.slice() });
+        localStorage.setItem('cmt-customProgs', JSON.stringify(state.customProgs));
+        buildProgressions(c);
+      };
+      $$('#customProgList .chip').forEach(ch => {
+        ch.onclick = (e) => {
+          if (e.target.dataset.del != null) {
+            state.customProgs.splice(+e.target.dataset.del, 1);
+            localStorage.setItem('cmt-customProgs', JSON.stringify(state.customProgs));
+            buildProgressions(c);
+            return;
+          }
+          const p = state.customProgs[+ch.dataset.ci];
+          if (!p) return;
+          stopProgPlayer();
+          state.chordProg = p.chords.slice();
+          $('#progList').textContent = state.chordProg.join(' → ');
+        };
+      });
       $('#playProg').onclick=()=>{
+        if (state.progPlaying) { stopProgPlayer(); return; }
+        if (!state.chordProg.length) return;
         const bpm = +$('#progBpm').value || 90;
-        const ms = 60000 / bpm * 2;
-        state.chordProg.forEach((name, i) => {
+        const ms = 60000 / bpm * 2; // 2 beats per chord
+        const loop = $('#progLoop')?.checked;
+        state.progPlaying = true;
+        state.progIndex = 0;
+        $('#playProg').textContent = '⏹ Stop';
+        const tick = () => {
+          if (!state.progPlaying) return;
+          if (state.progIndex >= state.chordProg.length) {
+            if (loop) state.progIndex = 0;
+            else { stopProgPlayer(); return; }
+          }
+          const name = state.chordProg[state.progIndex];
           const chord = chords.find(ch => ch.name === name);
-          if (chord) setTimeout(() => playChord(chord), i * ms);
-        });
+          const cur = $('#progCurrent');
+          if (cur) cur.textContent = name;
+          // highlight in list
+          const list = $('#progList');
+          if (list) {
+            list.innerHTML = state.chordProg.map((n,i) =>
+              i === state.progIndex
+                ? `<span style="color:var(--accent);text-decoration:underline">${n}</span>`
+                : n
+            ).join(' → ');
+          }
+          if (chord) playChord(chord);
+          state.progIndex++;
+          state.progTimer = setTimeout(tick, ms);
+        };
+        tick();
       };
     };
 
@@ -1930,18 +2099,27 @@
       {name:'Augmented', intervals:[0,4,8]},
       {name:'Sus4', intervals:[0,5,7]}
     ];
+    const bumpTrain = (key) => {
+      state.trainStats = state.trainStats || {ear:0,quiz:0,raga:0,lessons:0};
+      state.trainStats[key] = (state.trainStats[key] || 0) + 1;
+      localStorage.setItem('cmt-trainStats', JSON.stringify(state.trainStats));
+    };
     const buildEar=(c)=>{
       const mode = state.earMode || 'interval';
       c.innerHTML=`
         <div class="row"><button class="btn small" onclick="switchPanel('more')">← Back</button></div>
         <div class="text-center mb-12"><div class="score-badge">Score: <span id="earScore">${state.earScore}</span></div></div>
-        <div class="row" style="justify-content:center;margin-bottom:12px">
+        <div class="row" style="justify-content:center;margin-bottom:12px;flex-wrap:wrap">
           <button class="btn small ${mode==='interval'?'active':''}" id="modeInterval">Intervals</button>
           <button class="btn small ${mode==='chord'?'active':''}" id="modeChord">Chord Quality</button>
         </div>
+        <div class="row" style="justify-content:center;margin-bottom:10px">
+          <label style="font-size:.82rem"><input type="checkbox" id="earHarmonic" ${state.earHarmonic?'checked':''}> Harmonic (play together)</label>
+        </div>
         <div class="card text-center">
-          <button class="btn primary" id="playEar" style="margin-bottom:18px">🔊 Play</button>
-          <div class="chip-grid" style="justify-content:center" id="earChoices"></div>
+          <button class="btn primary" id="playEar" style="margin-bottom:12px">🔊 Play</button>
+          <button class="btn small" id="replayEar">↻ Replay</button>
+          <div class="chip-grid" style="justify-content:center;margin-top:14px" id="earChoices"></div>
           <div id="earResult" style="margin-top:16px;font-weight:600;min-height:26px"></div>
         </div>
       `;
@@ -1959,6 +2137,7 @@
             if (this.dataset.name === state.currentInterval.name) {
               res.textContent = '✅ Correct!'; res.style.color = 'var(--green)';
               state.earScore++; localStorage.setItem('cmt-ear', state.earScore); vibrate(30); speak('correct');
+              bumpTrain('ear');
             } else {
               res.textContent = '❌ ' + state.currentInterval.name; res.style.color = 'var(--red)';
               state.earScore = Math.max(0, state.earScore - 1); localStorage.setItem('cmt-ear', state.earScore);
@@ -1970,21 +2149,34 @@
       renderChoices();
       $('#modeInterval').onclick = () => { state.earMode = 'interval'; buildEar(c); };
       $('#modeChord').onclick = () => { state.earMode = 'chord'; buildEar(c); };
-      $('#playEar').onclick = () => {
+      $('#earHarmonic').onchange = function(){ state.earHarmonic = this.checked; };
+      const playCurrent = () => {
         $('#earResult').textContent = '';
         if (mode === 'interval') {
-          state.currentInterval = intervals[Math.floor(Math.random() * intervals.length)];
-          const root = 440;
-          playTone(root, 0.4);
-          setTimeout(() => playTone(root * Math.pow(2, state.currentInterval.st / 12), 0.45), 500);
+          if (!state.currentInterval) state.currentInterval = intervals[Math.floor(Math.random() * intervals.length)];
+          const root = 392 + Math.floor(Math.random() * 3) * 55;
+          const top = root * Math.pow(2, state.currentInterval.st / 12);
+          if (state.earHarmonic) {
+            playTone(root, 0.7, 'sine', 0.2);
+            playTone(top, 0.7, 'sine', 0.2);
+          } else {
+            playTone(root, 0.4);
+            setTimeout(() => playTone(top, 0.45), 480);
+          }
         } else {
-          state.currentInterval = chordQualities[Math.floor(Math.random() * chordQualities.length)];
-          const root = 220 + Math.random() * 200;
+          if (!state.currentInterval) state.currentInterval = chordQualities[Math.floor(Math.random() * chordQualities.length)];
+          const root = 220 + Math.random() * 180;
           state.currentInterval.intervals.forEach((iv, i) => {
-            playTone(root * Math.pow(2, iv / 12), 0.7, 'triangle', 0.18, i * 0.04);
+            playTone(root * Math.pow(2, iv / 12), 0.75, 'triangle', 0.16, i * 0.03);
           });
         }
       };
+      $('#playEar').onclick = () => {
+        if (mode === 'interval') state.currentInterval = intervals[Math.floor(Math.random() * intervals.length)];
+        else state.currentInterval = chordQualities[Math.floor(Math.random() * chordQualities.length)];
+        playCurrent();
+      };
+      $('#replayEar').onclick = () => { if (state.currentInterval) playCurrent(); };
     };
 
     const buildLooper=(c)=>{
@@ -2126,14 +2318,44 @@
       }
       return streak;
     };
+    const formatTimer = (sec) => {
+      const m = Math.floor(sec / 60), s = sec % 60;
+      return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+    };
+    const getPracticeElapsed = () => {
+      let sec = state.practiceTimerAcc || 0;
+      if (state.practiceTimerOn && state.practiceTimerStart)
+        sec += Math.floor((Date.now() - state.practiceTimerStart) / 1000);
+      return sec;
+    };
     const buildPractice=(c)=>{
       const today = todayKey();
       const mins = state.practiceLog[today] || 0;
+      const goal = state.practiceGoal || 20;
+      const streak = calcStreak();
+      const pct = Math.min(100, Math.round((mins / goal) * 100));
       c.innerHTML=`
         <div class="row"><button class="btn small" onclick="switchPanel('more')">← Back</button></div>
         <div class="stat-grid">
           <div class="stat-card"><div class="stat-value">${mins}</div><div class="stat-label">Minutes today</div></div>
-          <div class="stat-card"><div class="stat-value">${calcStreak()}</div><div class="stat-label">Day streak</div></div>
+          <div class="stat-card"><div class="stat-value">${streak}</div><div class="stat-label">Day streak 🔥</div></div>
+          <div class="stat-card"><div class="stat-value">${goal}m</div><div class="stat-label">Daily goal</div></div>
+        </div>
+        <div class="card">
+          <div class="section-title">Goal Progress</div>
+          <div style="height:10px;background:var(--surface2);border-radius:99px;overflow:hidden;margin-bottom:8px">
+            <div style="height:100%;width:${pct}%;background:var(--accent-grad);border-radius:99px;transition:width .3s"></div>
+          </div>
+          <p style="font-size:.8rem;color:var(--text2)">${pct >= 100 ? '✅ Goal reached today!' : pct + '% of daily goal'}</p>
+        </div>
+        <div class="card text-center">
+          <div class="section-title">Session Timer</div>
+          <div id="practiceClock" style="font-size:2.4rem;font-weight:800;font-variant-numeric:tabular-nums;margin:12px 0">${formatTimer(getPracticeElapsed())}</div>
+          <div class="row" style="justify-content:center">
+            <button class="btn primary" id="timerToggle">${state.practiceTimerOn?'⏸ Pause':'▶ Start'}</button>
+            <button class="btn small" id="timerSave">💾 Save to log</button>
+            <button class="btn small" id="timerReset">Reset</button>
+          </div>
         </div>
         <div class="card">
           <div class="section-title">Quick Log</div>
@@ -2142,6 +2364,11 @@
             <button class="btn" data-min="10">+10</button>
             <button class="btn" data-min="15">+15</button>
             <button class="btn primary" data-min="30">+30</button>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <label style="font-size:.82rem">Daily goal (min)</label>
+            <input type="number" id="goalInput" value="${goal}" min="5" max="180" style="width:64px">
+            <button class="btn small" id="saveGoal">Set</button>
           </div>
         </div>
         <div class="card">
@@ -2154,9 +2381,76 @@
         localStorage.setItem('cmt-practice', JSON.stringify(state.practiceLog));
         buildPractice(c);
       });
+      $('#saveGoal').onclick=()=>{
+        state.practiceGoal = Math.max(5, +$('#goalInput').value || 20);
+        localStorage.setItem('cmt-goal', String(state.practiceGoal));
+        buildPractice(c);
+      };
+      let clockIv = null;
+      const tickClock = () => {
+        const el = $('#practiceClock');
+        if (el) el.textContent = formatTimer(getPracticeElapsed());
+      };
+      $('#timerToggle').onclick=()=>{
+        if (state.practiceTimerOn) {
+          state.practiceTimerAcc = getPracticeElapsed();
+          state.practiceTimerOn = false;
+          state.practiceTimerStart = null;
+          if (clockIv) clearInterval(clockIv);
+          $('#timerToggle').textContent = '▶ Start';
+        } else {
+          state.practiceTimerOn = true;
+          state.practiceTimerStart = Date.now();
+          $('#timerToggle').textContent = '⏸ Pause';
+          clockIv = setInterval(tickClock, 1000);
+        }
+      };
+      $('#timerReset').onclick=()=>{
+        state.practiceTimerOn = false;
+        state.practiceTimerStart = null;
+        state.practiceTimerAcc = 0;
+        if (clockIv) clearInterval(clockIv);
+        tickClock();
+        $('#timerToggle').textContent = '▶ Start';
+      };
+      $('#timerSave').onclick=()=>{
+        const sec = getPracticeElapsed();
+        const addMin = Math.max(1, Math.round(sec / 60));
+        state.practiceLog[today] = (state.practiceLog[today]||0) + addMin;
+        localStorage.setItem('cmt-practice', JSON.stringify(state.practiceLog));
+        state.practiceTimerOn = false;
+        state.practiceTimerStart = null;
+        state.practiceTimerAcc = 0;
+        if (clockIv) clearInterval(clockIv);
+        buildPractice(c);
+      };
+      if (state.practiceTimerOn) clockIv = setInterval(tickClock, 1000);
     };
 
     const buildSetlist=(c)=>{
+      if (state.liveSetlist && state.setlist.length) {
+        const i = Math.max(0, Math.min(state.setlistIndex, state.setlist.length - 1));
+        state.setlistIndex = i;
+        const cur = state.setlist[i];
+        const next = state.setlist[i + 1];
+        const prev = state.setlist[i - 1];
+        c.innerHTML = `
+          <div style="display:flex;flex-direction:column;min-height:60vh;justify-content:center;text-align:center;padding:12px">
+            <p style="font-size:.85rem;color:var(--text2);margin-bottom:8px">${i + 1} / ${state.setlist.length}</p>
+            <div style="font-size:clamp(1.8rem,7vw,3rem);font-weight:800;line-height:1.2;margin:16px 0;color:var(--accent)">${cur}</div>
+            ${next ? `<p style="font-size:1rem;color:var(--text2);margin-top:8px">Next: <strong style="color:var(--text)">${next}</strong></p>` : '<p style="color:var(--text2)">— End of set —</p>'}
+            <div class="row" style="justify-content:center;margin-top:28px;gap:12px">
+              <button class="btn" id="livePrev" style="min-width:100px;min-height:52px;font-size:1.1rem" ${i===0?'disabled':''}>◀ Prev</button>
+              <button class="btn primary" id="liveNext" style="min-width:100px;min-height:52px;font-size:1.1rem" ${i>=state.setlist.length-1?'disabled':''}>Next ▶</button>
+            </div>
+            <button class="btn small" id="exitLive" style="margin-top:24px">Exit Live Mode</button>
+          </div>
+        `;
+        $('#livePrev').onclick = () => { if (state.setlistIndex > 0) { state.setlistIndex--; buildSetlist(c); } };
+        $('#liveNext').onclick = () => { if (state.setlistIndex < state.setlist.length - 1) { state.setlistIndex++; buildSetlist(c); } };
+        $('#exitLive').onclick = () => { state.liveSetlist = false; buildSetlist(c); };
+        return;
+      }
       c.innerHTML=`
         <div class="row"><button class="btn small" onclick="switchPanel('more')">← Back</button></div>
         <div class="card">
@@ -2171,6 +2465,9 @@
           <input type="text" id="newSetItem" placeholder="Song name…" style="flex:1">
           <button class="btn primary" id="addSet">Add</button>
         </div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn primary" id="startLive" style="width:100%;min-height:48px" ${!state.setlist.length?'disabled':''}>🎤 Start Live Mode</button>
+        </div>
       `;
       $('#addSet').onclick=()=>{
         const val=$('#newSetItem').value.trim();
@@ -2181,9 +2478,217 @@
         localStorage.setItem('cmt-setlist',JSON.stringify(state.setlist));
         buildSetlist(c);
       });
+      $('#startLive').onclick=()=>{
+        if (!state.setlist.length) return;
+        state.liveSetlist = true;
+        state.setlistIndex = 0;
+        buildSetlist(c);
+      };
     };
 
     // Circle of Fifths
+    // —— Learning pack ——
+    const buildFretQuiz = (c) => {
+      const inst = state.fretInst || 'guitar';
+      const labels = INSTRUMENTS[inst]?.labels || ['E','A','D','G','B','E'];
+      const std = INSTRUMENTS[inst]?.standard || [];
+      const makeQ = () => {
+        const s = Math.floor(Math.random() * labels.length);
+        const fret = Math.floor(Math.random() * 13);
+        let openIdx = NOTES.indexOf(labels[s]);
+        if (openIdx < 0 && std[s]) openIdx = NOTES.indexOf(std[s].replace(/\d/,''));
+        if (openIdx < 0) openIdx = 0;
+        const note = NOTES[(openIdx + fret) % 12];
+        return { s, fret, note, label: labels[s] };
+      };
+      let q = makeQ();
+      const options = () => {
+        const set = new Set([q.note]);
+        while (set.size < 4) set.add(NOTES[Math.floor(Math.random() * 12)]);
+        return [...set].sort(() => Math.random() - 0.5);
+      };
+      const render = () => {
+        const opts = options();
+        c.innerHTML = `
+          <div class="row"><button class="btn small" onclick="switchPanel('more')">← Back</button></div>
+          <div class="text-center mb-12"><div class="score-badge">Quiz: <span id="quizScore">${state.quizScore}</span></div></div>
+          <div class="card text-center">
+            <p style="color:var(--text2);font-size:.85rem;margin-bottom:8px">${INST_META[inst]?.label || inst}</p>
+            <div style="font-size:1.5rem;font-weight:800;margin:12px 0">String <span style="color:var(--accent)">${q.label}</span> · Fret <span style="color:var(--accent)">${q.fret}</span></div>
+            <p style="font-size:.85rem;color:var(--text2);margin-bottom:14px">What note is this?</p>
+            <div class="chip-grid" style="justify-content:center">${opts.map(n => `<button class="chip quiz-opt" data-n="${n}" style="min-width:56px">${n}</button>`).join('')}</div>
+            <div id="quizRes" style="margin-top:14px;font-weight:600;min-height:24px"></div>
+            <button class="btn small" id="quizNext" style="margin-top:12px">Next ▸</button>
+          </div>
+          <div class="row" style="margin-top:10px">${instSelectHTML(inst,'quizInst')}</div>
+        `;
+        $$('.quiz-opt').forEach(b => b.onclick = function() {
+          const res = $('#quizRes');
+          if (this.dataset.n === q.note) {
+            res.textContent = '✅ Correct!'; res.style.color = 'var(--green)';
+            state.quizScore++; localStorage.setItem('cmt-quiz', state.quizScore);
+            $('#quizScore').textContent = state.quizScore;
+            bumpTrain('quiz'); vibrate(20);
+          } else {
+            res.textContent = '❌ ' + q.note; res.style.color = 'var(--red)';
+          }
+        });
+        $('#quizNext').onclick = () => { q = makeQ(); render(); };
+        const sel = $('#quizInst');
+        if (sel) sel.onchange = function() { state.fretInst = this.value; q = makeQ(); render(); };
+      };
+      render();
+    };
+
+    const RAGA_LIST = {
+      bilawal: { label: 'Bilawal', scale: 'bilawal' },
+      bhairav: { label: 'Bhairav', scale: 'bhairav' },
+      yaman: { label: 'Yaman', scale: 'yaman' },
+      bhairavi: { label: 'Bhairavi', scale: 'bhairavi' },
+      kafi: { label: 'Kafi', scale: 'kafi' },
+      khamaj: { label: 'Khamaj', scale: 'khamaj' },
+      malkauns: { label: 'Malkauns', scale: 'malkauns' },
+      bhupali: { label: 'Bhupali', scale: 'bhupali' },
+      todi: { label: 'Todi', scale: 'todi' },
+      darbari: { label: 'Darbari', scale: 'darbari' },
+    };
+    const buildRaga = (c) => {
+      const key = state.ragaName || 'bhairav';
+      const info = RAGA_LIST[key] || RAGA_LIST.bhairav;
+      const scale = SCALE_DB[info.scale] || SCALE_DB.bilawal;
+      const root = state.scaleKey || 'C';
+      const rootIdx = NOTES.indexOf(root);
+      const notes = scale.intervals.map((iv, i) => ({
+        note: NOTES[(rootIdx + iv) % 12],
+        deg: scale.degrees[i] || ''
+      }));
+      c.innerHTML = `
+        <div class="row"><button class="btn small" onclick="switchPanel('more')">← Back</button></div>
+        <div class="row" style="gap:8px">
+          <select id="ragaSelect" style="flex:1">${Object.keys(RAGA_LIST).map(k =>
+            `<option value="${k}" ${k===key?'selected':''}>${RAGA_LIST[k].label}</option>`).join('')}</select>
+          <select id="ragaRoot">${NOTES.map(n => `<option ${n===root?'selected':''}>${n}</option>`).join('')}</select>
+        </div>
+        <div class="card text-center">
+          <div class="section-title">${info.label}</div>
+          <p style="font-size:.85rem;color:var(--text2);margin-bottom:12px">Allowed notes (Sa-based degrees)</p>
+          <div class="chip-grid" style="justify-content:center">
+            ${notes.map(n => `<button class="chip raga-note" data-note="${n.note}" style="flex-direction:column;padding:10px 12px"><strong>${n.note}</strong><small>${n.deg}</small></button>`).join('')}
+          </div>
+          <div class="row" style="justify-content:center;margin-top:16px">
+            <button class="btn primary" id="playRagaScale">▶ Play aroha</button>
+            <button class="btn small" id="ragaDrone">${state.droneOn?'🛑 Stop drone':'🕉️ Drone'}</button>
+          </div>
+        </div>
+        <p style="font-size:.78rem;color:var(--text2);text-align:center;margin-top:10px">Tap a note to hear it · Practice only these notes</p>
+      `;
+      $('#ragaSelect').onchange = function() { state.ragaName = this.value; buildRaga(c); };
+      $('#ragaRoot').onchange = function() { state.scaleKey = this.value; buildRaga(c); };
+      $$('.raga-note').forEach(b => b.onclick = () => {
+        playTone(noteFreqs[b.dataset.note + '4'] || 440, 0.5, 'sine', 0.25);
+        bumpTrain('raga');
+      });
+      $('#playRagaScale').onclick = () => {
+        let t = 0;
+        notes.forEach(n => {
+          playTone(noteFreqs[n.note + '4'] || 440, 0.35, 'sine', 0.22, t);
+          t += 0.28;
+        });
+        playTone(noteFreqs[notes[0].note + '5'] || 880, 0.45, 'sine', 0.2, t);
+        bumpTrain('raga');
+      };
+      $('#ragaDrone').onclick = () => {
+        state.droneNote = root;
+        toggleDrone();
+        buildRaga(c);
+      };
+    };
+
+    const LESSONS = [
+      { title: 'Open chords', mins: 5, steps: ['Tune your instrument', 'Practice C, G, D, Em, Am', 'Strum each cleanly for 30s', 'Log 5 minutes'] },
+      { title: 'Ear intervals', mins: 5, steps: ['Open Ear Trainer', 'Play 10 interval questions', 'Replay any you miss', 'Check Session Report'] },
+      { title: 'One scale', mins: 8, steps: ['Open Scales', 'Pick Major or a raga', 'Play ascending slowly', 'Use drone while practicing'] },
+      { title: 'Fretboard notes', mins: 5, steps: ['Open Fretboard Quiz', 'Score 10 correct', 'Switch instrument if you want', 'Review mistakes aloud'] },
+      { title: 'Progression practice', mins: 7, steps: ['Open Progressions', 'Load a preset or your custom one', 'Play with loop on', 'Strum along'] },
+      { title: 'Raga focus', mins: 8, steps: ['Open Raga Practice', 'Choose Bhairav or Yaman', 'Start drone', 'Play only allowed notes'] },
+    ];
+    const buildLesson = (c) => {
+      const day = (state.lessonDay || 0) % LESSONS.length;
+      const L = LESSONS[day];
+      c.innerHTML = `
+        <div class="row"><button class="btn small" onclick="switchPanel('more')">← Back</button></div>
+        <div class="card">
+          <p style="font-size:.8rem;color:var(--text2)">Day ${(day % LESSONS.length) + 1} of ${LESSONS.length}</p>
+          <div style="font-size:1.35rem;font-weight:800;margin:8px 0">${L.title}</div>
+          <p style="color:var(--text2);font-size:.85rem;margin-bottom:12px">About ${L.mins} minutes</p>
+          <ol style="padding-left:18px;line-height:1.7;font-size:.95rem">
+            ${L.steps.map(s => `<li>${s}</li>`).join('')}
+          </ol>
+          <div class="row" style="margin-top:16px">
+            <button class="btn primary" id="lessonDone">✅ Mark complete</button>
+            <button class="btn small" id="lessonSkip">Next lesson ▸</button>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px">
+          <button class="btn small" onclick="switchPanel('ear')">Ear Trainer</button>
+          <button class="btn small" onclick="switchPanel('fretQuiz')">Fret Quiz</button>
+          <button class="btn small" onclick="switchPanel('raga')">Raga</button>
+          <button class="btn small" onclick="switchPanel('progressions')">Progressions</button>
+          <button class="btn small" onclick="switchPanel('practice')">Timer</button>
+        </div>
+      `;
+      $('#lessonDone').onclick = () => {
+        bumpTrain('lessons');
+        state.lessonDay = day + 1;
+        localStorage.setItem('cmt-lessonDay', String(state.lessonDay));
+        const today = todayKey();
+        state.practiceLog[today] = (state.practiceLog[today] || 0) + L.mins;
+        localStorage.setItem('cmt-practice', JSON.stringify(state.practiceLog));
+        alert('Lesson complete! +' + L.mins + ' min logged.');
+        buildLesson(c);
+      };
+      $('#lessonSkip').onclick = () => {
+        state.lessonDay = day + 1;
+        localStorage.setItem('cmt-lessonDay', String(state.lessonDay));
+        buildLesson(c);
+      };
+    };
+
+    const buildReport = (c) => {
+      const st = state.trainStats || {};
+      const today = todayKey();
+      const mins = state.practiceLog[today] || 0;
+      const totalMin = Object.values(state.practiceLog || {}).reduce((a, b) => a + (b || 0), 0);
+      c.innerHTML = `
+        <div class="row"><button class="btn small" onclick="switchPanel('more')">← Back</button></div>
+        <div class="section-title">Session Report</div>
+        <div class="stat-grid">
+          <div class="stat-card"><div class="stat-value">${mins}</div><div class="stat-label">Min today</div></div>
+          <div class="stat-card"><div class="stat-value">${totalMin}</div><div class="stat-label">Min total</div></div>
+          <div class="stat-card"><div class="stat-value">${calcStreak()}</div><div class="stat-label">Streak</div></div>
+          <div class="stat-card"><div class="stat-value">${state.earScore}</div><div class="stat-label">Ear score</div></div>
+          <div class="stat-card"><div class="stat-value">${state.quizScore}</div><div class="stat-label">Quiz score</div></div>
+          <div class="stat-card"><div class="stat-value">${st.lessons || 0}</div><div class="stat-label">Lessons done</div></div>
+        </div>
+        <div class="card">
+          <div class="section-title">Activity counts</div>
+          <p style="line-height:1.8">👂 Ear answers tracked: <strong>${st.ear || 0}</strong><br>
+          🎯 Fret quiz hits: <strong>${st.quiz || 0}</strong><br>
+          🪷 Raga interactions: <strong>${st.raga || 0}</strong><br>
+          📖 Lessons completed: <strong>${st.lessons || 0}</strong></p>
+        </div>
+        <div class="card">
+          <div class="section-title">Suggested next</div>
+          <p style="font-weight:600">${
+            mins < (state.practiceGoal || 20) ? 'Finish your daily practice goal with the timer.'
+            : (st.ear || 0) < 10 ? 'Warm up with 10 Ear Trainer questions.'
+            : (st.quiz || 0) < 10 ? 'Try the Fretboard Quiz.'
+            : 'Open Daily Lesson for a guided session.'
+          }</p>
+        </div>
+      `;
+    };
+
     const buildCircle = (c) => {
       const majors = ['C','G','D','A','E','B','F#','Db','Ab','Eb','Bb','F'];
       const minors = ['Am','Em','Bm','F#m','C#m','G#m','Ebm','Bbm','Fm','Cm','Gm','Dm'];
