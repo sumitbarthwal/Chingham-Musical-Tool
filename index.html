@@ -1013,8 +1013,8 @@
     $('#fontUp').onclick=()=>{state.fontScale=Math.min(1.4,state.fontScale+0.08);localStorage.setItem('cmt-font',state.fontScale);applyTheme();};
     $('#fontDown').onclick=()=>{state.fontScale=Math.max(0.8,state.fontScale-0.08);localStorage.setItem('cmt-font',state.fontScale);applyTheme();};
     $('#fullscreenBtn').onclick=()=>{
-      if(!document.fullscreenElement) document.documentElement.requestFullscreen();
-      else document.exitFullscreen();
+      if(!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
+      else document.exitFullscreen().catch(()=>{});
     };
     $('#resetAllBtn').onclick=()=>{
       if(!confirm('Reset all settings, favourites, practice log and setlist?')) return;
@@ -2342,17 +2342,34 @@
         </div>
       `;
       let mediaRecorder = null, chunks = [];
+      let loopAudio = null;
+      const stopLoopPlayback = () => {
+        if (loopAudio) {
+          loopAudio.pause();
+          loopAudio.loop = false;
+          if (loopAudio._objUrl) URL.revokeObjectURL(loopAudio._objUrl);
+          loopAudio = null;
+        }
+        const playBtn = $('#loopPlay');
+        if (playBtn) playBtn.textContent = '▶ Play';
+      };
       $('#loopRec').onclick = async () => {
         try {
           if (!state.micStream) {
             alert('Please start the microphone in the Tuner panel first.');
             return;
           }
+          stopLoopPlayback();
           chunks = [];
           mediaRecorder = new MediaRecorder(state.micStream);
           mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
           mediaRecorder.onstop = () => {
             state.loopChunks = chunks;
+            // MediaRecorder's actual output container varies by browser (webm on
+            // Chrome/Firefox, mp4/aac on Safari) — remembering the real mimeType
+            // here means playback tags the Blob correctly instead of always
+            // claiming audio/webm, which silently failed to play on Safari.
+            state.loopMimeType = mediaRecorder.mimeType || 'audio/webm';
             $('#loopStatus').textContent = 'Recorded · ready to play';
           };
           mediaRecorder.start();
@@ -2371,19 +2388,33 @@
         }
       };
       $('#loopPlay').onclick = () => {
+        // Toggle: if a loop is already playing, this click stops it instead of
+        // stacking a second overlapping <audio> loop on top (previously every
+        // tap of Play started a brand-new infinite loop with no way to silence
+        // any of them short of leaving the page).
+        if (loopAudio) {
+          stopLoopPlayback();
+          $('#loopStatus').textContent = 'Stopped';
+          return;
+        }
         if (!state.loopChunks || !state.loopChunks.length) {
           $('#loopStatus').textContent = 'Nothing recorded yet';
           return;
         }
-        const blob = new Blob(state.loopChunks, { type: 'audio/webm' });
+        const blob = new Blob(state.loopChunks, { type: state.loopMimeType || 'audio/webm' });
         const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        audio.loop = true;
-        audio.play();
-        $('#loopStatus').textContent = 'Playing loop…';
-        audio.onended = () => URL.revokeObjectURL(url);
+        loopAudio = new Audio(url);
+        loopAudio._objUrl = url;
+        loopAudio.loop = true;
+        loopAudio.play().catch(() => {
+          $('#loopStatus').textContent = 'Playback failed in this browser';
+          stopLoopPlayback();
+        });
+        $('#loopStatus').textContent = 'Playing loop… tap Play again to stop';
+        $('#loopPlay').textContent = '⏹ Stop';
       };
       $('#loopClear').onclick = () => {
+        stopLoopPlayback();
         state.loopChunks = [];
         $('#loopStatus').textContent = 'Cleared';
       };
