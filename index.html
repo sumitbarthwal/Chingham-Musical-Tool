@@ -170,13 +170,31 @@
     }
     .chip.selected, .chip.active { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); box-shadow: 0 0 14px var(--accent-dim); }
     .chip.fav { border-color: var(--yellow); color: var(--yellow); }
-    .tuner-display { text-align: center; margin: 10px 0 18px; }
+    .tuner-display { text-align: center; margin: 10px 0 18px; position: relative; }
+    .tuner-display.locked::before {
+      content: ''; position: absolute; inset: -16px -24px; z-index: -1; border-radius: 32px;
+      background: radial-gradient(circle, var(--green-dim), transparent 70%);
+      opacity: 0; animation: lockRing 1.7s ease-out infinite; pointer-events: none;
+    }
+    @keyframes lockRing { 0% { opacity: .6; transform: scale(.92); } 100% { opacity: 0; transform: scale(1.16); } }
     .detected-note {
       font-family: var(--font-display); font-size: 3.8rem; font-weight: 700; letter-spacing: -.03em; line-height: 1.05;
       margin-bottom: 6px; background: var(--accent-grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
       background-clip: text; filter: drop-shadow(0 0 22px var(--accent-dim));
+      transition: filter .25s ease;
     }
-    .cents-display { font-family: var(--font-mono); font-size: 1.15rem; font-weight: 600; color: var(--text2); min-height: 28px; }
+    .detected-note.in-tune {
+      background: linear-gradient(135deg, #7ee8b8, var(--green) 65%, #7ee8b8);
+      -webkit-background-clip: text; background-clip: text;
+      filter: drop-shadow(0 0 26px var(--green-dim));
+      animation: notePulse 1.7s ease-in-out infinite;
+    }
+    @keyframes notePulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.035); } }
+    @media (prefers-reduced-motion: reduce) {
+      .tuner-display.locked::before { animation: none; opacity: .3; }
+      .detected-note.in-tune { animation: none; }
+    }
+    .cents-display { font-family: var(--font-mono); font-size: 1.15rem; font-weight: 600; color: var(--text2); min-height: 28px; transition: color .2s; }
     .cents-display.in-tune { color: var(--green); text-shadow: 0 0 16px var(--green-dim); }
     .hold-timer { font-size: .9rem; color: var(--green); margin-top: 4px; min-height: 22px; font-weight: 600; }
     canvas { display: block; max-width: 100%; border-radius: var(--radius); background: var(--surface-solid); }
@@ -184,9 +202,9 @@
     .string-btn {
       width: 56px; height: 56px; border-radius: 50%; border: 2px solid var(--glass-border); background: var(--surface2);
       color: var(--text); font-weight: 700; font-size: .72rem; display: flex; flex-direction: column; align-items: center;
-      justify-content: center; cursor: pointer; transition: .16s; line-height: 1.15; font-family: var(--font-mono);
+      justify-content: center; cursor: pointer; transition: .18s; line-height: 1.15; font-family: var(--font-mono);
     }
-    .string-btn.closest { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-dim), 0 0 18px var(--green-dim); }
+    .string-btn.closest { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-dim), 0 0 18px var(--green-dim); transform: scale(1.06); }
     .history-canvas { width: 100%; height: 44px; border-radius: 10px; background: var(--surface-solid); margin-top: 10px; }
     .tuning-label { font-size: .8rem; color: var(--text2); text-align: center; margin-bottom: 6px; }
     .chord-name {
@@ -726,7 +744,7 @@
       droneOn: false, droneNodes: null, droneNote: 'C', droneOct: 3,
       tunerSensitivity: parseFloat(localStorage.getItem('cmt-sens') || '0.5'),
       audioCtx: null, micStream: null, analyser: null,
-      tunerRaf: null, loopChunks: [], loopRecorder: null, isRecordingLoop: false,
+      tunerRaf: null, tunerLoopRaf: null, loopChunks: [], loopRecorder: null, isRecordingLoop: false,
     };
 
     let noteFreqs = {};
@@ -859,7 +877,12 @@
       return newRoot + rest;
     };
 
-    // Faster YIN with RMS gate + limited lag search for musical range
+    // Faster YIN with RMS gate + limited lag search for musical range.
+    // Single-pass with early exit: the cumulative mean normalized difference at
+    // lag t only depends on raw diffs up to t, so we can normalize and test for
+    // a dip as we go instead of doing a full second pass over every lag — this
+    // roughly halves the work and lets high notes (short lags) return almost
+    // immediately instead of always scanning out to the low-frequency bound.
     const yin = (buffer, sr, threshold) => {
       const sens = Math.max(0.05, Math.min(1, state.tunerSensitivity ?? 0.5));
       // Higher sensitivity = lower RMS gate + looser YIN threshold
@@ -875,6 +898,9 @@
       const maxLag = Math.min(Math.floor(n / 2), Math.floor(sr / 50));
       const half = maxLag;
       const diff = new Float32Array(half + 1);
+      diff[0] = 1;
+      for (let t = 1; t < minLag; t++) diff[t] = 1; // below range: treat as "far"
+      let runningSum = 0;
       for (let t = minLag; t <= half; t++) {
         let s = 0;
         const limit = n - t;
@@ -882,19 +908,13 @@
           const d = buffer[j] - buffer[j + t];
           s += d * d;
         }
-        diff[t] = s;
-      }
-      // Cumulative mean normalized difference
-      let runningSum = 0;
-      diff[0] = 1;
-      for (let t = 1; t <= half; t++) {
-        runningSum += diff[t];
-        diff[t] = runningSum > 0 ? (diff[t] * t) / runningSum : 1;
-      }
-      for (let t = minLag + 1; t < half; t++) {
-        if (diff[t] < yinThresh && diff[t] < diff[t - 1] && diff[t] < diff[t + 1]) {
-          const denom = 2 * (diff[t - 1] - 2 * diff[t] + diff[t + 1]);
-          const better = denom !== 0 ? t + (diff[t - 1] - diff[t + 1]) / denom : t;
+        runningSum += s;
+        diff[t] = runningSum > 0 ? (s * t) / runningSum : 1;
+        // Once diff[t] is known we can finally test t-1 as a local minimum
+        const tm1 = t - 1;
+        if (tm1 >= minLag + 1 && diff[tm1] < yinThresh && diff[tm1] < diff[tm1 - 1] && diff[tm1] < diff[t]) {
+          const denom = 2 * (diff[tm1 - 1] - 2 * diff[tm1] + diff[t]);
+          const better = denom !== 0 ? tm1 + (diff[tm1 - 1] - diff[t]) / denom : tm1;
           return sr / better;
         }
       }
@@ -933,6 +953,14 @@
       if (state.tunerRaf) {
         cancelAnimationFrame(state.tunerRaf);
         state.tunerRaf = null;
+      }
+      // Pause pitch-detection polling when leaving the tuner panel — the mic
+      // stream itself stays open (the Looper reuses it), only the per-frame
+      // YIN analysis (and its DOM updates) pauses. It's resumed by buildTuner
+      // if still listening when the user comes back.
+      if (state.tunerLoopRaf) {
+        cancelAnimationFrame(state.tunerLoopRaf);
+        state.tunerLoopRaf = null;
       }
       if (state.metroActive) {
         state.metroActive = false;
@@ -1064,6 +1092,17 @@
 
     // TUNER
     const buildTuner=(c)=>{
+      // buildTuner reruns in place (not just via switchPanel) whenever capo,
+      // instrument or tuning changes — it rebuilds #tunerCanvas and used to
+      // kick off a brand-new drawTunerLoop() every time without ever
+      // cancelling the previous chain. Those orphaned loops piled up for the
+      // rest of the session (each one still drawing every frame), so the
+      // needle/strobe/bar display would get steadily jankier the more you
+      // touched capo/instrument controls. Cancel first so only one ever runs.
+      if (state.tunerRaf) {
+        cancelAnimationFrame(state.tunerRaf);
+        state.tunerRaf = null;
+      }
       const hasCustom = state.customTunings[state.tunerInst] && state.customTunings[state.tunerInst].length;
       const tuningLabel = hasCustom ? (state.tuningName||'Custom') : 'Standard';
       c.innerHTML=`
@@ -1150,6 +1189,9 @@
       }
       renderStrings();
       drawTunerLoop();
+      // Resume pitch detection if the mic was already listening (e.g. user
+      // switched away to another panel and came back, or changed capo).
+      if (state.isListening && !state.tunerLoopRaf) tunerLoop();
     };
 
     const renderStrings=()=>{
@@ -1222,17 +1264,38 @@
       const ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;
       ctx.clearRect(0,0,w,h);
       const inTune=Math.abs(state.targetNeedle)<0.08;
+      const rr=(x,y,rw,rh,rad)=>{ // rounded-rect path, works even without ctx.roundRect
+        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x,y,rw,rh,rad); }
+        else {
+          const r2=Math.min(rad,rw/2,rh/2);
+          ctx.beginPath();
+          ctx.moveTo(x+r2,y); ctx.arcTo(x+rw,y,x+rw,y+rh,r2); ctx.arcTo(x+rw,y+rh,x,y+rh,r2);
+          ctx.arcTo(x,y+rh,x,y,r2); ctx.arcTo(x,y,x+rw,y,r2); ctx.closePath();
+        }
+      };
       if(state.tunerSkin==='strobe'){
         for(let i=0;i<11;i++){
-          const x=30+i*28, offset=Math.sin(Date.now()/180+i*0.7)*(Math.abs(state.targetNeedle)*18);
-          ctx.fillStyle=i===5?(inTune?'#35d399':'#ffb454'):(i<5?'#fb7185':'#fbbf24');
-          ctx.fillRect(x,50+offset,18,70);
+          const x=30+i*28, isMid=i===5, offset=Math.sin(Date.now()/180+i*0.7)*(Math.abs(state.targetNeedle)*18);
+          const col=isMid?(inTune?'#35d399':'#ffb454'):(i<5?'#fb7185':'#fbbf24');
+          ctx.save();
+          if (isMid && inTune) { ctx.shadowColor=col; ctx.shadowBlur=16; }
+          const grad=ctx.createLinearGradient(0,50+offset,0,120+offset);
+          grad.addColorStop(0,col); grad.addColorStop(1,`${col}55`);
+          ctx.fillStyle=grad;
+          rr(x,50+offset,18,70,6); ctx.fill();
+          ctx.restore();
         }
       } else if(state.tunerSkin==='bar'){
         const mid=w/2, barW=Math.min(140,Math.abs(state.targetNeedle)*160);
-        ctx.fillStyle=inTune?'#35d399':(state.targetNeedle<0?'#fb7185':'#fbbf24');
-        ctx.fillRect(state.targetNeedle<0?mid-barW:mid,70,barW||4,36);
-        ctx.fillStyle='#666';ctx.fillRect(mid-1,55,2,66);
+        const col=inTune?'#35d399':(state.targetNeedle<0?'#fb7185':'#fbbf24');
+        ctx.save();
+        if (inTune) { ctx.shadowColor=col; ctx.shadowBlur=20; }
+        const grad=ctx.createLinearGradient(mid-140,0,mid+140,0);
+        grad.addColorStop(0,'#fb7185'); grad.addColorStop(.5,inTune?'#35d399':'#fbbf24'); grad.addColorStop(1,'#fb7185');
+        ctx.fillStyle=grad;
+        rr(state.targetNeedle<0?mid-barW:mid,68,barW||4,40,10); ctx.fill();
+        ctx.restore();
+        ctx.fillStyle='rgba(255,255,255,.35)';rr(mid-1.5,50,3,76,2);ctx.fill();
       } else {
         const cx=w/2,cy=h*0.78,r=Math.min(w,h)*0.62;
         const start=Math.PI+Math.PI/5,end=2*Math.PI-Math.PI/5,span=end-start;
@@ -1240,20 +1303,24 @@
         zones.forEach(z=>{
           ctx.beginPath();
           ctx.arc(cx,cy,r,start+(z.s+50)/100*span,start+(z.e+50)/100*span);
-          ctx.strokeStyle=z.col;ctx.lineWidth=16;ctx.stroke();
+          ctx.strokeStyle=z.col;ctx.lineWidth=16;ctx.lineCap='round';ctx.stroke();
         });
         for(let c=-50;c<=50;c+=10){
           const ang=start+(c+50)/100*span;
           ctx.beginPath();
           ctx.moveTo(cx+(r-10)*Math.cos(ang),cy+(r-10)*Math.sin(ang));
           ctx.lineTo(cx+(r+10)*Math.cos(ang),cy+(r+10)*Math.sin(ang));
-          ctx.strokeStyle=c===0?'#fff':'#888';ctx.lineWidth=c===0?2.5:1.2;ctx.stroke();
+          ctx.strokeStyle=c===0?'#fff':'#888';ctx.lineWidth=c===0?2.5:1.2;ctx.lineCap='round';ctx.stroke();
         }
         state.needleAngle+=(state.targetNeedle-state.needleAngle)*0.22;
         const ang=start+span/2+state.needleAngle*0.9;
+        const needleCol=inTune?'#7ee8b8':'#fff';
+        ctx.save();
+        if (inTune) { ctx.shadowColor='#35d399'; ctx.shadowBlur=14; }
         ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+(r-8)*Math.cos(ang),cy+(r-8)*Math.sin(ang));
-        ctx.strokeStyle='#fff';ctx.lineWidth=3.5;ctx.lineCap='round';ctx.stroke();
-        ctx.beginPath();ctx.arc(cx,cy,7,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();
+        ctx.strokeStyle=needleCol;ctx.lineWidth=3.5;ctx.lineCap='round';ctx.stroke();
+        ctx.beginPath();ctx.arc(cx,cy,7,0,Math.PI*2);ctx.fillStyle=needleCol;ctx.fill();
+        ctx.restore();
       }
       drawHistory();
       state.tunerRaf = requestAnimationFrame(drawTunerLoop);
@@ -1346,6 +1413,10 @@
       }
     };
     const stopMic=()=>{
+      if (state.tunerLoopRaf) {
+        cancelAnimationFrame(state.tunerLoopRaf);
+        state.tunerLoopRaf = null;
+      }
       if(state.micStream) state.micStream.getTracks().forEach(t=>t.stop());
       state.micStream=null; state.analyser=null; state.isListening=false;
       state.targetNeedle=0; state.closestString=-1; state.manualString=-1; state.centsHistory=[];
@@ -1353,15 +1424,19 @@
       $('#startMic')?.classList.remove('hidden');
       $('#stopMic')?.classList.add('hidden');
       const noteEl=$('#detectedNote'), centsEl=$('#centsDisplay'), holdEl=$('#holdTimer');
-      if(noteEl) noteEl.textContent='—';
+      if(noteEl){ noteEl.textContent='—'; noteEl.classList.remove('in-tune'); }
       if(centsEl){centsEl.textContent='Ready';centsEl.classList.remove('in-tune');}
+      $('.tuner-display')?.classList.remove('locked');
       if(holdEl) holdEl.textContent='';
       const hint=$('#stringHint'); if(hint) hint.textContent='';
       const micHint = $('#micHint'); if (micHint) micHint.textContent = 'Microphone access is required for live tuning. Click the button above to grant permission.';
       renderStrings();
     };
     const tunerLoop=()=>{
-      if (!state.isListening || !state.analyser || !state.audioCtx) return;
+      if (!state.isListening || !state.analyser || !state.audioCtx) {
+        state.tunerLoopRaf = null;
+        return;
+      }
       const buf = new Float32Array(state.analyser.fftSize);
       state.analyser.getFloatTimeDomainData(buf);
       const freq = yin(buf, state.audioCtx.sampleRate);
@@ -1383,7 +1458,7 @@
           // Auto mode: nearest chromatic note + nearest string
           const res = findClosestNote(state.smoothedFreq);
           if (!res) {
-            requestAnimationFrame(tunerLoop);
+            state.tunerLoopRaf = requestAnimationFrame(tunerLoop);
             return;
           }
           cents = res.cents;
@@ -1405,7 +1480,7 @@
           targetIdx = closest;
         }
         if (cents == null || isNaN(cents)) {
-          requestAnimationFrame(tunerLoop);
+          state.tunerLoopRaf = requestAnimationFrame(tunerLoop);
           return;
         }
         const noteEl = $('#detectedNote'), centsEl = $('#centsDisplay'), holdEl = $('#holdTimer');
@@ -1416,9 +1491,12 @@
         }
         if (centsEl) {
           const abs = Math.abs(cents);
+          const isInTune = abs < 5;
           centsEl.textContent = (cents > 0 ? '+' : '') + cents.toFixed(1) + ' ¢';
-          centsEl.classList.toggle('in-tune', abs < 5);
-          if (abs < 5) {
+          centsEl.classList.toggle('in-tune', isInTune);
+          noteEl?.classList.toggle('in-tune', isInTune);
+          $('.tuner-display')?.classList.toggle('locked', isInTune);
+          if (isInTune) {
             if (!state.inTuneStart) state.inTuneStart = Date.now();
             state.inTuneHold = Math.floor((Date.now() - state.inTuneStart) / 1000);
             if (holdEl) holdEl.textContent = state.inTuneHold > 0
@@ -1440,8 +1518,13 @@
       } else {
         // No strong pitch — gently return needle toward center
         state.targetNeedle *= 0.92;
+        if (state.inTuneHold || state.inTuneStart) {
+          state.inTuneStart = null; state.inTuneHold = 0;
+          $('#detectedNote')?.classList.remove('in-tune');
+          $('.tuner-display')?.classList.remove('locked');
+        }
       }
-      requestAnimationFrame(tunerLoop);
+      state.tunerLoopRaf = requestAnimationFrame(tunerLoop);
     };
 
     // TUNING EDITOR
