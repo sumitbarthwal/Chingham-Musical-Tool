@@ -203,8 +203,15 @@
       width: 56px; height: 56px; border-radius: 50%; border: 2px solid var(--glass-border); background: var(--surface2);
       color: var(--text); font-weight: 700; font-size: .72rem; display: flex; flex-direction: column; align-items: center;
       justify-content: center; cursor: pointer; transition: .18s; line-height: 1.15; font-family: var(--font-mono);
+      position: relative;
     }
     .string-btn.closest { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-dim), 0 0 18px var(--green-dim); transform: scale(1.06); }
+    .string-btn.tuned { border-color: var(--green); background: var(--green-dim); }
+    .string-btn.tuned .tuned-check {
+      position: absolute; top: -4px; right: -4px; width: 18px; height: 18px; border-radius: 50%;
+      background: var(--green); color: #06301c; font-size: .62rem; font-weight: 800;
+      display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px var(--bg-a);
+    }
     .history-canvas { width: 100%; height: 44px; border-radius: 10px; background: var(--surface-solid); margin-top: 10px; }
     .tuning-label { font-size: .8rem; color: var(--text2); text-align: center; margin-bottom: 6px; }
     .chord-name {
@@ -723,6 +730,7 @@
       savedTunings: JSON.parse(localStorage.getItem('cmt-tunings') || '{}'),
       capo: 0, a4: 440, tunerSkin: 'needle',
       isListening: false, smoothedFreq: 0, targetNeedle: 0, needleAngle: 0,
+      pitchHistory: [], outlierStreak: 0, inTuneActive: false, tunedStrings: new Set(),
       closestString: -1, manualString: -1, centsHistory: [], inTuneStart: null, inTuneHold: 0,
       chordInst: 'guitar', selectedChord: null, leftHanded: false, chordVoicingIndex: 0,
       chordFilter: '', qualityFilter: '', capoTranspose: false,
@@ -1158,14 +1166,15 @@
         state.tuningName = state.customTunings[state.tunerInst] ? 'Custom' : 'Standard';
         state.manualString = -1;
         state.closestString = -1;
+        state.tunedStrings.clear();
         buildTuner(c);
       };
-      $('#capoUp').onclick=()=>{state.capo=Math.min(12,state.capo+1);buildTuner(c);};
-      $('#capoDown').onclick=()=>{state.capo=Math.max(0,state.capo-1);buildTuner(c);};
-      $('#capoReset').onclick=()=>{state.capo=0;buildTuner(c);};
-      $('#capoBtn').onclick=()=>{state.capo=(state.capo+1)%13;buildTuner(c);};
+      $('#capoUp').onclick=()=>{state.capo=Math.min(12,state.capo+1);state.tunedStrings.clear();buildTuner(c);};
+      $('#capoDown').onclick=()=>{state.capo=Math.max(0,state.capo-1);state.tunedStrings.clear();buildTuner(c);};
+      $('#capoReset').onclick=()=>{state.capo=0;state.tunedStrings.clear();buildTuner(c);};
+      $('#capoBtn').onclick=()=>{state.capo=(state.capo+1)%13;state.tunedStrings.clear();buildTuner(c);};
       $('#tuningBtn').onclick=()=>switchPanel('tuning');
-      $('#a4Ref').onchange=function(){state.a4=parseFloat(this.value)||440;buildFreqs(state.a4);renderStrings();};
+      $('#a4Ref').onchange=function(){state.a4=parseFloat(this.value)||440;buildFreqs(state.a4);state.tunedStrings.clear();renderStrings();};
       $('#skinSelect').onchange=function(){state.tunerSkin=this.value;};
       const sens=$('#sensSlider');
       if(sens) sens.oninput=function(){
@@ -1202,9 +1211,10 @@
       el.innerHTML=freqs.map((f,i)=>{
         const isManual = state.manualString === i;
         const isClosest = !isManual && state.closestString === i;
-        const cls = isManual ? 'closest' : (isClosest ? 'closest' : '');
+        const isTuned = state.tunedStrings.has(i);
+        const cls = [isManual||isClosest?'closest':'', isTuned?'tuned':''].filter(Boolean).join(' ');
         const style = isManual ? 'border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim),0 0 18px var(--accent-dim);' : '';
-        return `<button class="string-btn ${cls}" data-idx="${i}" style="${style}">${labels[i]||i+1}<br><small>${f.toFixed(0)} Hz</small>${isManual?'<br><small>🔒</small>':''}</button>`;
+        return `<button class="string-btn ${cls}" data-idx="${i}" style="${style}">${isTuned?'<span class="tuned-check">✓</span>':''}${labels[i]||i+1}<br><small>${f.toFixed(0)} Hz</small>${isManual?'<br><small>🔒</small>':''}</button>`;
       }).join('');
       el.querySelectorAll('.string-btn').forEach(b => {
         b.onclick = () => {
@@ -1230,6 +1240,9 @@
           }
           state.inTuneStart = null;
           state.inTuneHold = 0;
+          state.inTuneActive = false;
+          state.pitchHistory = [];
+          state.outlierStreak = 0;
           renderStrings();
         };
       });
@@ -1380,7 +1393,10 @@
         state.isListening = true;
         state.inTuneStart = null;
         state.inTuneHold = 0;
+        state.inTuneActive = false;
         state.smoothedFreq = 0;
+        state.pitchHistory = [];
+        state.outlierStreak = 0;
         $('#startMic')?.classList.add('hidden');
         $('#stopMic')?.classList.remove('hidden');
         setHint('✅ Listening… Play a note near the microphone.');
@@ -1420,7 +1436,8 @@
       if(state.micStream) state.micStream.getTracks().forEach(t=>t.stop());
       state.micStream=null; state.analyser=null; state.isListening=false;
       state.targetNeedle=0; state.closestString=-1; state.manualString=-1; state.centsHistory=[];
-      state.inTuneStart=null; state.inTuneHold=0; state.smoothedFreq=0;
+      state.inTuneStart=null; state.inTuneHold=0; state.inTuneActive=false; state.smoothedFreq=0;
+      state.pitchHistory=[]; state.outlierStreak=0;
       $('#startMic')?.classList.remove('hidden');
       $('#stopMic')?.classList.add('hidden');
       const noteEl=$('#detectedNote'), centsEl=$('#centsDisplay'), holdEl=$('#holdTimer');
@@ -1441,11 +1458,46 @@
       state.analyser.getFloatTimeDomainData(buf);
       const freq = yin(buf, state.audioCtx.sampleRate);
       if (freq && freq > 50 && freq < 2000) {
-        // Slightly faster response when locked to a string
-        const alpha = state.manualString >= 0 ? 0.45 : 0.32;
+        // A single 2048-sample window occasionally produces a wild, wrong
+        // reading (room noise, string buzz, a transient) — feeding that
+        // straight into the smoothing filter is what made the needle jump
+        // around even on a rock-steady note. Two defenses:
+        //  1) a rolling median-of-3 quietly drops one-frame spikes before
+        //     they're even considered, since a real pitch shows up on
+        //     consecutive frames but a noise blip usually doesn't.
+        //  2) an outlier gate: a reading that's still far (>45¢) from the
+        //     current smoothed pitch is held back for one extra frame —
+        //     accepted only if it repeats (a genuine note/string change),
+        //     ignored if it was just a one-off spike.
+        state.pitchHistory.push(freq);
+        if (state.pitchHistory.length > 5) state.pitchHistory.shift();
+        const sortedHist = [...state.pitchHistory].sort((a, b) => a - b);
+        const medianFreq = sortedHist[Math.floor(sortedHist.length / 2)];
+
+        const sens = Math.max(0.05, Math.min(1, state.tunerSensitivity ?? 0.5));
+        // Sensitivity now also controls needle response: low = steadier/slower
+        // (better in noisy rooms), high = snappier — so the slider actually
+        // does something about the fluctuation, not just the detection gate.
+        const alpha = state.manualString >= 0
+          ? 0.22 + sens * 0.30   // locked mode: 0.24 → 0.52
+          : 0.14 + sens * 0.22;  // auto mode: 0.15 → 0.36
+
+        const candidateCents = state.smoothedFreq
+          ? Math.abs(1200 * Math.log2(medianFreq / state.smoothedFreq)) : 0;
+        if (state.smoothedFreq && candidateCents > 45) {
+          state.outlierStreak++;
+          if (state.outlierStreak < 2) {
+            // Likely a noise blip — hold the last stable reading and wait
+            // to see if the next frame confirms a real pitch change.
+            state.tunerLoopRaf = requestAnimationFrame(tunerLoop);
+            return;
+          }
+        } else {
+          state.outlierStreak = 0;
+        }
         state.smoothedFreq = state.smoothedFreq
-          ? state.smoothedFreq * (1 - alpha) + freq * alpha
-          : freq;
+          ? state.smoothedFreq * (1 - alpha) + medianFreq * alpha
+          : medianFreq;
         const freqs = getFreqs();
         const labels = getCurrentTuning().map(n => n.replace(/\d/, ''));
         let cents, displayNote, targetIdx;
@@ -1491,7 +1543,14 @@
         }
         if (centsEl) {
           const abs = Math.abs(cents);
-          const isInTune = abs < 5;
+          // Hysteresis: enter "in tune" at ±5¢ but only fall back out past
+          // ±8¢. Without this gap, a reading sitting right at the edge could
+          // flicker in/out every frame and the hold timer never accumulated
+          // a full second — so the "in tune" confirmation almost never
+          // appeared even when the string was correctly tuned.
+          if (!state.inTuneActive && abs < 5) state.inTuneActive = true;
+          else if (state.inTuneActive && abs > 8) state.inTuneActive = false;
+          const isInTune = state.inTuneActive;
           centsEl.textContent = (cents > 0 ? '+' : '') + cents.toFixed(1) + ' ¢';
           centsEl.classList.toggle('in-tune', isInTune);
           noteEl?.classList.toggle('in-tune', isInTune);
@@ -1502,7 +1561,13 @@
             if (holdEl) holdEl.textContent = state.inTuneHold > 0
               ? `✅ In tune · ${state.inTuneHold}s`
               : '✅ In tune';
-            if (state.inTuneHold === 1) { speak('in tune'); vibrate(20); }
+            if (state.inTuneHold === 1) {
+              speak('in tune'); vibrate(20);
+              if (targetIdx >= 0 && !state.tunedStrings.has(targetIdx)) {
+                state.tunedStrings.add(targetIdx);
+                renderStrings();
+              }
+            }
           } else {
             state.inTuneStart = null;
             state.inTuneHold = 0;
@@ -1518,8 +1583,8 @@
       } else {
         // No strong pitch — gently return needle toward center
         state.targetNeedle *= 0.92;
-        if (state.inTuneHold || state.inTuneStart) {
-          state.inTuneStart = null; state.inTuneHold = 0;
+        if (state.inTuneHold || state.inTuneStart || state.inTuneActive) {
+          state.inTuneStart = null; state.inTuneHold = 0; state.inTuneActive = false;
           $('#detectedNote')?.classList.remove('in-tune');
           $('.tuner-display')?.classList.remove('locked');
         }
@@ -1572,6 +1637,7 @@
         state.customTunings[inst] = current.slice();
         localStorage.setItem('cmt-customTunings', JSON.stringify(state.customTunings));
         state.tuningName = $('#tuningName').value.trim() || 'Custom';
+        state.tunedStrings.clear();
         switchPanel('tuner');
       };
       $('#saveTuning').onclick=()=>{
