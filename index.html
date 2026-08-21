@@ -27,6 +27,7 @@
       --accent-grad: linear-gradient(135deg, #ffc978, #ff7d6b 65%, #ff5d8f);
       --green: #35d399; --green-dim: rgba(53,211,153,.16);
       --yellow: #fbbf24; --red: #fb7185; --red-dim: rgba(251,113,133,.16);
+      --lock: #60a5fa; --lock-dim: rgba(96,165,250,.18);
       --text: #f5f3ff; --text2: #9995ac; --border: rgba(255,255,255,.11);
       --radius: 20px; --radius-sm: 14px; --radius-lg: 26px;
       --shadow-1: 0 10px 30px -8px rgba(0,0,0,.55);
@@ -45,6 +46,7 @@
       --accent-grad: linear-gradient(135deg, #e08a2e, #c2560a 65%, #b23a5e);
       --green: #0f8f57; --green-dim: rgba(15,143,87,.12);
       --yellow: #a8710f; --red: #c93b56; --red-dim: rgba(201,59,86,.12);
+      --lock: #2563eb; --lock-dim: rgba(37,99,235,.14);
       --text: #241c12; --text2: #7d7263; --border: rgba(30,20,5,.1);
       --shadow-1: 0 10px 30px -10px rgba(80,50,10,.25);
       --shadow-glow: 0 0 0 1px var(--glass-border), 0 10px 26px -10px rgba(80,50,10,.2);
@@ -57,6 +59,7 @@
       --accent-grad: linear-gradient(135deg, #ffee00, #00ff9d);
       --green: #00ff66; --green-dim: rgba(0,255,102,.15);
       --yellow: #ffcc00; --red: #ff3355; --red-dim: rgba(255,51,85,.16);
+      --lock: #00d4ff; --lock-dim: rgba(0,212,255,.18);
       --text: #ffee00; --text2: #b8b88a; --border: #222;
       --shadow-1: 0 0 0 rgba(0,0,0,0); --shadow-glow: 0 0 0 1px var(--glass-border);
       --ambient-op: 0;
@@ -176,6 +179,14 @@
       background: radial-gradient(circle, var(--green-dim), transparent 70%);
       opacity: 0; animation: lockRing 1.7s ease-out infinite; pointer-events: none;
     }
+    /* .confirmed is a calmer, non-pulsing state for a string that was already
+       locked earlier — landing back in tune on a revisit shouldn't retrigger
+       the "you just achieved this!" celebration animation every time. */
+    .tuner-display.confirmed::before {
+      content: ''; position: absolute; inset: -16px -24px; z-index: -1; border-radius: 32px;
+      background: radial-gradient(circle, var(--lock-dim), transparent 70%);
+      opacity: .5; pointer-events: none;
+    }
     @keyframes lockRing { 0% { opacity: .6; transform: scale(.92); } 100% { opacity: 0; transform: scale(1.16); } }
     .detected-note {
       font-family: var(--font-display); font-size: 3.8rem; font-weight: 700; letter-spacing: -.03em; line-height: 1.05;
@@ -189,6 +200,12 @@
       filter: drop-shadow(0 0 26px var(--green-dim));
       animation: notePulse 1.7s ease-in-out infinite;
     }
+    .detected-note.confirmed {
+      background: linear-gradient(135deg, #93c5fd, var(--lock) 65%, #93c5fd);
+      -webkit-background-clip: text; background-clip: text;
+      filter: drop-shadow(0 0 22px var(--lock-dim));
+      animation: none;
+    }
     @keyframes notePulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.035); } }
     @media (prefers-reduced-motion: reduce) {
       .tuner-display.locked::before { animation: none; opacity: .3; }
@@ -196,7 +213,9 @@
     }
     .cents-display { font-family: var(--font-mono); font-size: 1.15rem; font-weight: 600; color: var(--text2); min-height: 28px; transition: color .2s; }
     .cents-display.in-tune { color: var(--green); text-shadow: 0 0 16px var(--green-dim); }
+    .cents-display.confirmed { color: var(--lock); text-shadow: 0 0 14px var(--lock-dim); }
     .hold-timer { font-size: .9rem; color: var(--green); margin-top: 4px; min-height: 22px; font-weight: 600; }
+    .hold-timer.confirmed { color: var(--lock); }
     canvas { display: block; max-width: 100%; border-radius: var(--radius); background: var(--surface-solid); }
     .string-row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin: 16px 0; }
     .string-btn {
@@ -206,13 +225,27 @@
       position: relative;
     }
     .string-btn.closest { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-dim), 0 0 18px var(--green-dim); transform: scale(1.06); }
-    .string-btn.tuned { border-color: var(--green); background: var(--green-dim); }
+    /* Confirmed/locked strings get their own stable colour (blue) so they read
+       distinctly from "currently reading in tune right now" (green) — once you
+       see blue + the lock badge, that string is done and needs no more attention. */
+    .string-btn.tuned { border-color: var(--lock); background: var(--lock-dim); }
+    .string-btn.tuned.closest { border-color: var(--lock); box-shadow: 0 0 0 3px var(--lock-dim), 0 0 18px var(--lock-dim); }
     .string-btn.tuned .tuned-check {
       position: absolute; top: -4px; right: -4px; width: 18px; height: 18px; border-radius: 50%;
-      background: var(--green); color: #06301c; font-size: .62rem; font-weight: 800;
+      background: var(--lock); color: #06204a; font-size: .62rem; font-weight: 800;
       display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px var(--bg-a);
     }
     .history-canvas { width: 100%; height: 44px; border-radius: 10px; background: var(--surface-solid); margin-top: 10px; }
+    .all-tuned-toast {
+      position: fixed; left: 50%; bottom: calc(var(--nav-h) + var(--safe-bottom) + 18px);
+      transform: translateX(-50%) translateY(12px); z-index: 60; pointer-events: none;
+      padding: 12px 22px; border-radius: 999px; font-weight: 700; font-size: .95rem;
+      color: #06204a; background: linear-gradient(135deg, #93c5fd, var(--lock) 70%);
+      box-shadow: 0 10px 28px -6px var(--lock-dim), 0 0 0 1px var(--glass-border-hi);
+      opacity: 0; transition: opacity .35s ease, transform .35s ease;
+    }
+    .all-tuned-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    @media (prefers-reduced-motion: reduce) { .all-tuned-toast { transition: opacity .35s ease; } }
     .tuning-label { font-size: .8rem; color: var(--text2); text-align: center; margin-bottom: 6px; }
     .chord-name {
       font-family: var(--font-display); font-size: 1.75rem; font-weight: 700; text-align: center; margin: 10px 0 8px;
@@ -834,6 +867,25 @@
         const u=new SpeechSynthesisUtterance(txt); u.rate=1.1; speechSynthesis.speak(u);
       }
     };
+    // Brief toast celebrating a full set of strings all confirmed in tune —
+    // only fires once per completed round (buildTuner/capo/instrument changes
+    // clear tunedStrings, which naturally re-arms this for the next session).
+    let allTunedToastTimer = null;
+    const showAllTunedCelebration = () => {
+      if (state.currentPanel !== 'tuner') return;
+      let el = $('#allTunedToast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'allTunedToast';
+        el.className = 'all-tuned-toast';
+        document.body.appendChild(el);
+      }
+      el.textContent = '🎉 All strings tuned!';
+      el.classList.remove('show'); void el.offsetWidth; // restart animation if re-triggered
+      el.classList.add('show');
+      clearTimeout(allTunedToastTimer);
+      allTunedToastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+    };
     const getCurrentTuning = (inst=state.tunerInst) => {
       const custom = state.customTunings[inst];
       if(custom && custom.length === INSTRUMENTS[inst].strings)
@@ -901,9 +953,13 @@
       for (let i = 0; i < n; i++) rms += buffer[i] * buffer[i];
       rms = Math.sqrt(rms / n);
       if (rms < rmsGate) return null;
-      // Search only lags that correspond to ~50–1200 Hz (typical instrument range)
+      // Low-frequency floor scales with the current instrument (see
+      // getMinDetectableFreq) — a fixed 50Hz floor silently made Bass/Double
+      // Bass low strings (E1≈41Hz) impossible to detect, since their period
+      // exceeds what a 50Hz-tuned search window ever looks at.
+      const minFreqFloor = state.tunerMinFreq || 50;
       const minLag = Math.max(2, Math.floor(sr / 1200));
-      const maxLag = Math.min(Math.floor(n / 2), Math.floor(sr / 50));
+      const maxLag = Math.min(Math.floor(n / 2), Math.floor(sr / minFreqFloor));
       const half = maxLag;
       const diff = new Float32Array(half + 1);
       diff[0] = 1;
@@ -933,7 +989,7 @@
       // Prefer notes near instrument range using log distance
       let best = null, minCents = Infinity;
       for (const [n, f] of Object.entries(noteFreqs)) {
-        if (f < 40 || f > 5000) continue;
+        if (f < 25 || f > 5000) continue;
         const cents = Math.abs(1200 * Math.log2(freq / f));
         if (cents < minCents) { minCents = cents; best = n; }
       }
@@ -944,6 +1000,23 @@
     const centsFromTarget = (freq, targetHz) => {
       if (!freq || !targetHz) return null;
       return 1200 * Math.log2(freq / targetHz);
+    };
+    // A fixed analyser buffer tuned for guitar/ukulele-range instruments can't
+    // resolve genuinely low strings (Bass E1≈41Hz, Double Bass down to ~41-46Hz,
+    // Drop D bass D1≈37Hz) — their period is longer than the search window ever
+    // looks at, so they were silently undetectable. Scale the FFT buffer and
+    // the YIN frequency floor to the lowest string actually in play, and stay
+    // small/fast for everything else so guitar/violin/etc. keep the snappier
+    // 2048-sample buffer they had before.
+    const getTunerBufferSettings = () => {
+      let lowest = 220;
+      try {
+        const freqs = getFreqs();
+        if (freqs && freqs.length) lowest = Math.min(...freqs);
+      } catch (_) { /* getFreqs not ready yet (e.g. very first call) */ }
+      if (lowest < 45) return { fftSize: 8192, minFreq: 20 };   // 5-string-low/extreme drop territory
+      if (lowest < 70) return { fftSize: 4096, minFreq: 30 };   // Bass, Double Bass
+      return { fftSize: 2048, minFreq: 50 };                     // everything else (unchanged, fast)
     };
 
     const applyTheme = () => {
@@ -1110,6 +1183,15 @@
       if (state.tunerRaf) {
         cancelAnimationFrame(state.tunerRaf);
         state.tunerRaf = null;
+      }
+      // Re-derive the pitch-detector buffer/floor for whatever instrument and
+      // tuning are active now (capo/instrument/tuning are all about to be
+      // read below), and push it to a live analyser immediately so switching
+      // to Bass mid-session doesn't require restarting the mic to work.
+      const bufSettings = getTunerBufferSettings();
+      state.tunerMinFreq = bufSettings.minFreq;
+      if (state.analyser && state.analyser.fftSize !== bufSettings.fftSize) {
+        state.analyser.fftSize = bufSettings.fftSize;
       }
       const hasCustom = state.customTunings[state.tunerInst] && state.customTunings[state.tunerInst].length;
       const tuningLabel = hasCustom ? (state.tuningName||'Custom') : 'Standard';
@@ -1386,7 +1468,9 @@
           try { state.analyser.disconnect(); } catch (_) {}
         }
         state.analyser = state.audioCtx.createAnalyser();
-        state.analyser.fftSize = 2048;
+        const bufSettings = getTunerBufferSettings();
+        state.tunerMinFreq = bufSettings.minFreq;
+        state.analyser.fftSize = bufSettings.fftSize;
         state.analyser.smoothingTimeConstant = 0.3;
         const source = state.audioCtx.createMediaStreamSource(state.micStream);
         source.connect(state.analyser);
@@ -1441,9 +1525,10 @@
       $('#startMic')?.classList.remove('hidden');
       $('#stopMic')?.classList.add('hidden');
       const noteEl=$('#detectedNote'), centsEl=$('#centsDisplay'), holdEl=$('#holdTimer');
-      if(noteEl){ noteEl.textContent='—'; noteEl.classList.remove('in-tune'); }
-      if(centsEl){centsEl.textContent='Ready';centsEl.classList.remove('in-tune');}
-      $('.tuner-display')?.classList.remove('locked');
+      if(noteEl){ noteEl.textContent='—'; noteEl.classList.remove('in-tune', 'confirmed'); }
+      if(centsEl){centsEl.textContent='Ready';centsEl.classList.remove('in-tune', 'confirmed');}
+      if(holdEl) holdEl.classList.remove('confirmed');
+      $('.tuner-display')?.classList.remove('locked', 'confirmed');
       if(holdEl) holdEl.textContent='';
       const hint=$('#stringHint'); if(hint) hint.textContent='';
       const micHint = $('#micHint'); if (micHint) micHint.textContent = 'Microphone access is required for live tuning. Click the button above to grant permission.';
@@ -1457,7 +1542,13 @@
       const buf = new Float32Array(state.analyser.fftSize);
       state.analyser.getFloatTimeDomainData(buf);
       const freq = yin(buf, state.audioCtx.sampleRate);
-      if (freq && freq > 50 && freq < 2000) {
+      // This guard has to track the same adaptive floor yin() uses internally
+      // (state.tunerMinFreq) — it used to be hardcoded to 50Hz, which meant a
+      // correctly-detected Bass/Double Bass low string (e.g. E1≈41Hz) got
+      // computed correctly inside yin() and then silently thrown away right
+      // here before ever reaching the display.
+      const minFreqFloor = state.tunerMinFreq || 50;
+      if (freq && freq > minFreqFloor * 0.9 && freq < 2000) {
         // A single 2048-sample window occasionally produces a wild, wrong
         // reading (room noise, string buzz, a transient) — feeding that
         // straight into the smoothing filter is what made the needle jump
@@ -1551,27 +1642,45 @@
           if (!state.inTuneActive && abs < 5) state.inTuneActive = true;
           else if (state.inTuneActive && abs > 8) state.inTuneActive = false;
           const isInTune = state.inTuneActive;
+          // A string that's already been confirmed once gets a distinct calm
+          // "locked" colour on revisits instead of repeating the excited
+          // first-time pulse — the point is to signal "you're done here,
+          // stop chasing this needle" rather than re-celebrating every time.
+          const wasConfirmed = targetIdx >= 0 && state.tunedStrings.has(targetIdx);
+          const showConfirmed = isInTune && wasConfirmed;
+          const showAchieving = isInTune && !wasConfirmed;
           centsEl.textContent = (cents > 0 ? '+' : '') + cents.toFixed(1) + ' ¢';
-          centsEl.classList.toggle('in-tune', isInTune);
-          noteEl?.classList.toggle('in-tune', isInTune);
-          $('.tuner-display')?.classList.toggle('locked', isInTune);
+          centsEl.classList.toggle('in-tune', showAchieving);
+          centsEl.classList.toggle('confirmed', showConfirmed);
+          noteEl?.classList.toggle('in-tune', showAchieving);
+          noteEl?.classList.toggle('confirmed', showConfirmed);
+          $('.tuner-display')?.classList.toggle('locked', showAchieving);
+          $('.tuner-display')?.classList.toggle('confirmed', showConfirmed);
           if (isInTune) {
             if (!state.inTuneStart) state.inTuneStart = Date.now();
             state.inTuneHold = Math.floor((Date.now() - state.inTuneStart) / 1000);
-            if (holdEl) holdEl.textContent = state.inTuneHold > 0
-              ? `✅ In tune · ${state.inTuneHold}s`
-              : '✅ In tune';
-            if (state.inTuneHold === 1) {
+            if (holdEl) {
+              holdEl.classList.toggle('confirmed', showConfirmed);
+              holdEl.textContent = showConfirmed
+                ? '🔒 Locked — no need to tune further'
+                : (state.inTuneHold > 0 ? `✅ In tune · ${state.inTuneHold}s` : '✅ In tune');
+            }
+            if (state.inTuneHold === 1 && targetIdx >= 0 && !wasConfirmed) {
               speak('in tune'); vibrate(20);
-              if (targetIdx >= 0 && !state.tunedStrings.has(targetIdx)) {
-                state.tunedStrings.add(targetIdx);
-                renderStrings();
+              state.tunedStrings.add(targetIdx);
+              renderStrings();
+              const total = getCurrentTuning().length;
+              if (state.tunedStrings.size >= total) {
+                speak('all strings tuned');
+                vibrate([30,60,30]);
+                showAllTunedCelebration();
               }
             }
           } else {
             state.inTuneStart = null;
             state.inTuneHold = 0;
             if (holdEl) {
+              holdEl.classList.remove('confirmed');
               holdEl.textContent = cents < 0 ? '↑ Tune up' : '↓ Tune down';
               holdEl.style.color = cents < 0 ? 'var(--yellow)' : 'var(--red)';
             }
@@ -1585,8 +1694,10 @@
         state.targetNeedle *= 0.92;
         if (state.inTuneHold || state.inTuneStart || state.inTuneActive) {
           state.inTuneStart = null; state.inTuneHold = 0; state.inTuneActive = false;
-          $('#detectedNote')?.classList.remove('in-tune');
-          $('.tuner-display')?.classList.remove('locked');
+          $('#detectedNote')?.classList.remove('in-tune', 'confirmed');
+          $('#centsDisplay')?.classList.remove('in-tune', 'confirmed');
+          $('#holdTimer')?.classList.remove('confirmed');
+          $('.tuner-display')?.classList.remove('locked', 'confirmed');
         }
       }
       state.tunerLoopRaf = requestAnimationFrame(tunerLoop);

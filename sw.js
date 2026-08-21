@@ -1,5 +1,5 @@
 /* Chingham's Musical Tool — Service Worker */
-const CACHE = 'chingham-v5';
+const CACHE = 'chingham-v7';
 const ASSETS = [
   './',
   './index.html',
