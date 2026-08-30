@@ -1575,18 +1575,51 @@
 
         const candidateCents = state.smoothedFreq
           ? Math.abs(1200 * Math.log2(medianFreq / state.smoothedFreq)) : 0;
-        if (state.smoothedFreq && candidateCents > 45) {
+        let isConfirmedJump = false;
+        // The gap between adjacent strings is at minimum ~400-500¢ (even a
+        // half-step-down alternate tuning keeps strings hundreds of cents
+        // apart), while noise on a held, noisy note realistically wanders
+        // within roughly ±20-30¢ even in a loud room. 45¢ sat too close to
+        // that noise ceiling — under real background noise, random readings
+        // occasionally crossed it on two consecutive frames by coincidence
+        // and got treated as a "confirmed" string change, snapping the
+        // needle to noise and making it visibly jerk around. 70¢ + a 3-frame
+        // streak keeps a wide, safe margin above realistic noise while still
+        // responding immediately to an actual string switch (which clears
+        // this bar in a single frame and stays past it, not just twice).
+        if (state.smoothedFreq && candidateCents > 70) {
           state.outlierStreak++;
-          if (state.outlierStreak < 2) {
+          if (state.outlierStreak < 3) {
             // Likely a noise blip — hold the last stable reading and wait
-            // to see if the next frame confirms a real pitch change.
+            // to see if it keeps confirming a real pitch change.
             state.tunerLoopRaf = requestAnimationFrame(tunerLoop);
             return;
           }
+          // Three consecutive frames agree this is a real change (a
+          // different string, not noise) — snap straight to it. Blending it
+          // in via the slow EMA below used to mean the display crawled
+          // through every intermediate note on the way (e.g. switching from
+          // the low E string to A would flash "G#2" for ~100ms before
+          // landing on A2) — the smoothing is meant to steady a held note,
+          // not slow-motion a genuine jump that's already confirmed as real.
+          isConfirmedJump = true;
+          state.outlierStreak = 0;
+          // Landing on a different string should start a fresh "how long
+          // have you held this in tune" countdown — without this, snapping
+          // straight to the new pitch (see above) could inherit the *stale*
+          // timestamp from the previous string's hold. Since cents can now
+          // read near-zero the instant we snap, the hold could jump straight
+          // past exactly 1 second (the trigger for marking a string
+          // confirmed) instead of counting through it, so the new string
+          // would show "in tune" correctly but silently never get the ✅
+          // confirmation or its locked checkmark.
+          state.inTuneStart = null;
+          state.inTuneHold = 0;
+          state.inTuneActive = false;
         } else {
           state.outlierStreak = 0;
         }
-        state.smoothedFreq = state.smoothedFreq
+        state.smoothedFreq = (state.smoothedFreq && !isConfirmedJump)
           ? state.smoothedFreq * (1 - alpha) + medianFreq * alpha
           : medianFreq;
         const freqs = getFreqs();
